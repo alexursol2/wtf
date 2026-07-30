@@ -290,6 +290,11 @@ async function connect() {
   state.account = await state.signer.getAddress();
   state.chainId = Number((await state.provider.getNetwork()).chainId);
 
+  // Drop anything built for a previous identity — including the read-only
+  // client created at page load, which is bound to a throwaway wallet.
+  state.handleClient = null;
+  state.handleClientFor = "";
+
   const noxAddress = NOX_COMPUTE[state.chainId];
   if (!noxAddress) {
     banner(
@@ -319,9 +324,7 @@ async function connect() {
   state.venue = new Contract(CONFIG.venue, VENUE_ABI, state.signer);
   state.nox = new Contract(noxAddress, NOX_ABI, state.provider);
 
-  $("netLabel").textContent = `${CHAIN_NAMES[state.chainId] ?? state.chainId} · ${shortAddr(state.account)}`;
-  $("netLabel").className = "pill ok";
-  $("connect").textContent = "Connected";
+  setConnectedChrome();
 
   try {
     state.priceScale = await state.venue.PRICE_SCALE();
@@ -338,6 +341,83 @@ async function connect() {
 
   clearBanner();
   await refresh();
+}
+
+/**
+ * Drops this site's session and returns to the public read-only view.
+ *
+ * Two things make this more than a cosmetic button.
+ *
+ * First, EVERY piece of account-derived state has to go together — signer,
+ * account, and above all the cached handle client. Leaving that client behind is
+ * precisely the bug that made the connected write path fail: a client bound to
+ * one identity, reused under another, mints proofs the contract rejects with an
+ * opaque custom error during gas estimation. Clearing them as a set is what
+ * keeps that from recurring in reverse.
+ *
+ * Second, be honest about what this is. A dapp cannot log you out of MetaMask —
+ * only the wallet can revoke that. Newer MetaMask exposes
+ * `wallet_revokePermissions`, so we ask for a real revoke where it exists and
+ * fall back to clearing our own session where it does not. Either way the tape
+ * keeps working, because published prints are public and never needed a wallet.
+ */
+async function disconnect() {
+  const eth = (window as any).ethereum;
+
+  // Ask the wallet to actually revoke, where supported. Failure is expected on
+  // older MetaMask and is not worth surfacing — the local clear below is the
+  // part that matters.
+  try {
+    await eth?.request?.({
+      method: "wallet_revokePermissions",
+      params: [{ eth_accounts: {} }],
+    });
+  } catch {
+    /* not supported — clearing our own session is still correct */
+  }
+
+  state.provider = null;
+  state.signer = null;
+  state.account = "";
+  state.chainId = 0;
+  state.handleClient = null;
+  state.handleClientFor = "";
+
+  // Values decrypted under the old identity must not linger. Public prints are
+  // safe to keep — they are public — but anything read with a viewer grant is
+  // not ours to display any more.
+  for (const [id, text] of [
+    ["cashHandle", "—"],
+    ["cashState", "no handle yet"],
+    ["sharesHandle", "—"],
+    ["sharesState", "no handle yet"],
+    ["bondBalance", "—"],
+    ["wrappedHandle", "—"],
+    ["wrappedState", "no handle yet"],
+  ] as const) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = text;
+      if (id.endsWith("State")) el.className = "pill muted";
+    }
+  }
+
+  $("connect").classList.remove("hidden");
+  $("connect").textContent = "Connect wallet";
+  $("disconnect").classList.add("hidden");
+
+  banner("Disconnected. The public tape stays readable — prints do not need a wallet.", "info");
+
+  // Back to the read-only view rather than a blank page.
+  await connectReadOnly();
+}
+
+/** Reflects a live connection in the header. */
+function setConnectedChrome() {
+  $("netLabel").textContent = `${CHAIN_NAMES[state.chainId] ?? state.chainId} · ${shortAddr(state.account)}`;
+  $("netLabel").className = "pill ok";
+  $("connect").classList.add("hidden");
+  $("disconnect").classList.remove("hidden");
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1223,26 @@ $("depositForm").addEventListener("submit", (e) => onDeposit(e).catch((e) => ban
 $("wrapForm").addEventListener("submit", (e) => onWrap(e).catch((e) => banner(e.message, "error")));
 
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
+$("disconnect").addEventListener("click", () => disconnect().catch((e) => banner(e.message, "error")));
 $("postForm").addEventListener("submit", (e) => onPost(e).catch((e) => banner(e.message, "error")));
+
+/**
+ * The wallet can change identity underneath us with no click of ours, which is
+ * the same hazard as a stale cache: a handle client bound to the old account
+ * would go on minting proofs the contract rejects. Rebuild on account change,
+ * and reload on chain change — a provider's chain is fixed at construction.
+ */
+{
+  const eth = (window as any).ethereum;
+  eth?.on?.("accountsChanged", (accounts: string[]) => {
+    if (!accounts || accounts.length === 0) {
+      void disconnect();
+    } else if (accounts[0].toLowerCase() !== state.account.toLowerCase()) {
+      void connect().catch((e) => banner(e.message, "error"));
+    }
+  });
+  eth?.on?.("chainChanged", () => window.location.reload());
+}
 
 /**
  * Two separate clocks, deliberately.
