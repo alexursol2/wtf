@@ -162,6 +162,12 @@ It shows the pooled balance at Layer 1, then a confidential transfer to a restri
 
 We do **not** call `compliance.canTransfer(from, to, 0)` and describe it as enforcement. A zero amount passes every amount-gated module trivially.
 
+**Venue escrow is not backed by the wrapper.** `depositShares` and `depositCash` credit a self-declared encrypted amount and never call the `ConfidentialWrapper`; the venue does not reference it on any path. So escrow is unbacked — a verified participant can credit themselves an arbitrary encrypted balance.
+
+The architecture intended the wrapper to be touched on deposit and withdraw, with only `fill()` kept off it to avoid cross-contract ACL propagation on the hot path. We built the hot path and the wrapper, and did not wire the deposit path between them.
+
+What this does and does not affect: settlement *between* parties is still exact — the branchless fill moves real encrypted balances and the arithmetic is verified on-chain. What is missing is the link tying escrow to actual custody, which in production would make `depositShares` pull via `confidentialTransfer` from the wrapper. Naming it is the honest position; it is a missing integration, not a broken one.
+
 **Grants are permanent.** There is no revocation primitive. The honest mitigation is revocation-by-rotation — move the value into a fresh handle and grant only the parties who should still see it. The historical handle stays readable for its historical value. **We do not claim this as a tested feature.**
 
 **An order can never be known to be exhausted.** `qtyRemaining` is encrypted, so there is no on-chain "fully filled" state. The maker decrypts their own remainder and cancels to reclaim. This is a genuine consequence of confidentiality, not an unfinished feature.

@@ -293,6 +293,22 @@ button.primary {
   border-top: 1px solid var(--line);
 }
 
+/* Ordering has to be visible, not discovered by failing. */
+.step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
 .subsection h3 {
   margin: 0 0 4px;
   font-size: 12px;

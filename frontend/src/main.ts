@@ -85,6 +85,8 @@ const state = {
   venue: null as Contract | null,
   nox: null as Contract | null,
   handleClient: null as HandleClient | null,
+  /** Which account the cached handle client is bound to. See getHandleClient. */
+  handleClientFor: "" as string,
   priceScale: 10000n,
   lisDeferral: 90n,
   auditor: "",
@@ -148,11 +150,29 @@ function handleConfigOverride(): any {
   return Object.keys(override).length > 0 ? override : undefined;
 }
 
+/**
+ * The handle client is cached AGAINST THE ACCOUNT IT BELONGS TO, never on its
+ * own. That distinction is load-bearing.
+ *
+ * A plain `if (cached) return cached` is wrong here, and wrong in a way that
+ * fails far from its cause. The page loads read-only, so the tape renders
+ * without a wallet — and that read path builds a client bound to a throwaway
+ * random wallet. Cache it unconditionally and it survives the user connecting
+ * MetaMask, so `encryptInput` goes on minting proofs owned by an address nobody
+ * controls. The gateway signs them happily; the contract then rejects them at
+ * validateInputProof with a bare custom error, during gas estimation, so the
+ * wallet never even opens. Reads fail too, because that random address holds no
+ * viewer grant.
+ *
+ * Keying on the account makes the stale case unrepresentable.
+ */
 async function getHandleClient(): Promise<HandleClient> {
-  if (state.handleClient) return state.handleClient;
+  const wanted = state.account || "readonly";
+  if (state.handleClient && state.handleClientFor === wanted) return state.handleClient;
 
   if (state.signer) {
     state.handleClient = await createEthersHandleClient(state.signer as any, handleConfigOverride());
+    state.handleClientFor = wanted;
     return state.handleClient;
   }
 
@@ -163,6 +183,7 @@ async function getHandleClient(): Promise<HandleClient> {
   // holds nothing, is never funded, and never signs a transaction.
   const ephemeral = Wallet.createRandom().connect(readOnlyProvider());
   state.handleClient = await createEthersHandleClient(ephemeral as any, handleConfigOverride());
+  state.handleClientFor = wanted;
   return state.handleClient;
 }
 
@@ -241,7 +262,15 @@ async function tryDecrypt(handle: string): Promise<bigint | null> {
 function isTransient(e: any): boolean {
   if (e instanceof NotYetComputedHandleError || e instanceof UnknownHandleError) return true;
   if (e?.constructor?.name === "SubgraphOutOfSyncError") return true;
-  return /not yet computed|unknown handle|out of sync/i.test(e?.message ?? "");
+  const m = e?.message ?? "";
+
+  // "not a viewer" (HTTP 403) is genuinely ambiguous: the gateway says it both
+  // when the grant is absent and when it exists on-chain but has not been
+  // indexed yet. Same words, opposite meanings. Treating it as fatal makes a
+  // freshly-granted balance read as permanently unreadable, so the UI shows it
+  // as pending — the on-chain isViewer check upstream is what decides whether a
+  // grant exists at all, and that is authoritative.
+  return /not yet computed|unknown handle|out of sync|not a viewer|access_denied/i.test(m);
 }
 
 // ---------------------------------------------------------------------------
