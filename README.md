@@ -86,6 +86,22 @@ The fill price is a **snapshot handle** (`Nox.add(o.price, ZERO)`), never the li
 
 ---
 
+## Chain of Trust — what we can and cannot attest
+
+iExec's attestation work asks three questions: did the right code run, did it run on the right hardware, and was that hardware in a verified environment? The strong version of the claim for a venue would be: *the regulator does not merely receive the numbers, they receive evidence the venue executed the code it claims.* We cannot make that claim honestly today, and this section says exactly why.
+
+```bash
+npx hardhat run scripts/attestation-check.ts
+```
+
+**Verifiable today — build provenance.** `trust.noxprotocol.io` exposes exactly one API route, `POST /api/attestation`, taking `{digest, attestationRepo, signingRepo}`. It confirms that a container image digest was produced by a given source repository, via GitHub build attestations. That answers *did the right code get built*. Every other path on that host returns the SPA's HTML, and the obvious `/api/*` alternatives all 404 — checked by probing, not by reading docs.
+
+**Not verifiable by us — that a specific fill ran in a verified TEE.** The primitive genuinely exists: [`dstack-quote-service`](https://github.com/iExec-Nox/dstack-quote-service) exposes `GET /quote?data=<custom>`, which binds arbitrary custom data into a TDX quote and replays the RTMRs, plus `GET /info` for app id, instance id, measurements and compose hash. Binding a fill id or a request hash into that `data` field is exactly the right shape for per-fill attestation.
+
+The obstacle is topological rather than cryptographic. That service is a **sidecar**: it listens on `0.0.0.0:9999` *inside* the CVM, next to `nox-runner`, and is reachable only by whoever operates the runner. On the hosted testnet stack that is not us, and no public endpoint proxies it.
+
+**So per-fill attestation is designed, not shipped.** The design is concrete — add an `attestationRef` to `Fill`, have the runner bind the fill id into the quote's custom data, and surface the quote, RTMRs and compose hash per trade. We did not add the field, because we could not populate it, and a struct member that is always empty is a worse misrepresentation than an acknowledged gap.
+
 ## Disclosure matrix
 
 | Party | Sees |
@@ -292,6 +308,7 @@ Live on Ethereum Sepolia, no mocks in any demo path. See `deployments/*.sepolia.
 | Holder register, grant on demand | done (`scripts/register-demo.ts`) |
 | Auditor route | done — regulator-vs-public side by side, unreported fills, register |
 | Compliance rejection on the encrypted path | done (`scripts/compliance-demo.ts`) |
+| Chain of Trust | investigated — build provenance verifiable, per-fill attestation designed-not-shipped |
 
 The auditor route shows the disclosure gap directly: for each fill, what the
 regulator can decrypt beside what the public can currently see. A row is flagged
