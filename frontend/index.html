@@ -23,7 +23,12 @@
 
     <div id="banner" class="banner hidden"></div>
 
-    <main>
+    <nav class="tabs">
+      <button id="tabMarket" class="tab active" data-view="market">Market</button>
+      <button id="tabAuditor" class="tab" data-view="auditor">Auditor view</button>
+    </nav>
+
+    <main id="viewMarket">
       <!-- ---------------- own position ---------------- -->
       <section class="card">
         <div class="card-head">
@@ -100,6 +105,68 @@
           bonds quote 98.7500 as 987500. A print with a published price and a withheld volume is
           the regime working: the deferral flag itself is public, exactly as under MiFIR, so
           declaring a fill large-in-scale announces that it was large without revealing how large.
+        </p>
+      </section>
+    </main>
+
+    <!-- ---------------- auditor route ---------------- -->
+    <main id="viewAuditor" class="hidden">
+      <section class="card">
+        <div class="card-head">
+          <h2>Regulator</h2>
+          <span class="hint">what the auditor can decrypt, against what the public can currently see</span>
+        </div>
+        <p class="note" id="auditorIdentity">
+          Connect as the auditor address to decrypt. Anyone may open this view — but only the
+          auditor holds the grants, so for anyone else the left column stays sealed. That is the
+          point: the gap below is enforced by the protocol, not by this page.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Fill volumes</h2>
+          <span class="hint">granted to the auditor at the moment of the fill &mdash; before the public deferral elapses</span>
+        </div>
+        <div id="auditorFills" class="rows">
+          <p class="empty">No fills yet.</p>
+        </div>
+        <p class="caption">
+          The regulator sees the size from block one. The public sees it only after the deferral.
+          Every row where those two columns disagree is the regime doing its job.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Unreported fills</h2>
+          <span class="hint">settled trades with no print submitted</span>
+        </div>
+        <div id="auditorUnreported" class="rows">
+          <p class="empty">Every settled fill has been reported.</p>
+        </div>
+        <p class="note">
+          Reporting is an obligation on the maker, as it is in the real regime &mdash; the contract
+          cannot force it. A missing print is therefore <strong>detectable, not preventable</strong>:
+          the auditor holds the quantity handle from the moment of the fill, so it can see exactly
+          what was never reported.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Holder register</h2>
+          <span class="hint">disclosed by the issuer on request &mdash; not automatic</span>
+        </div>
+        <div id="auditorRegister" class="rows">
+          <p class="empty">Connect a wallet to check register access.</p>
+        </div>
+        <p class="note">
+          Fill volumes are granted automatically; the register is not. It stays sealed until the
+          issuer calls <code>grantRegisterAccess</code> for a named holder. Grants are
+          <strong>permanent</strong> &mdash; Nox has no <code>removeViewer</code> and no persistent
+          <code>disallow</code>. What a grant does not do is follow the holder: the next transfer
+          mints a fresh handle the grantee cannot read. Rotation, not revocation.
         </p>
       </section>
     </main>

@@ -285,6 +285,91 @@ button.primary {
   border-radius: 8px;
 }
 
+/* ---------------- tabs ---------------- */
+
+.tabs {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 14px 20px 0;
+  display: flex;
+  gap: 6px;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.tab:hover:not(.active) {
+  color: var(--text);
+  border-color: transparent;
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------------- auditor: the disclosure gap ---------------- */
+
+/* Two columns side by side is the whole argument — the regulator's view and
+   the public's view of the SAME fill, at the same moment. */
+.gap-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+@media (max-width: 560px) {
+  .gap-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gap-cell {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+}
+
+.gap-cell label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.gap-cell.regulator {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+}
+
+.gap-cell.public {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+}
+
+/* Highlight the row when the two columns disagree — that IS the deferral. */
+.row.gap-open {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.row.unreported {
+  border-color: color-mix(in srgb, var(--pub) 45%, var(--line));
+}
+
 /* ---------------- the tape ---------------- */
 
 .tape-grid {

@@ -284,6 +284,20 @@ async function main() {
     check("auditor can read volume BEFORE the public", auditorView, EXPECTED_FILL);
   }
 
+  // SKIP_REPORT leaves the trade settled but unprinted, which is the
+  // detectable-not-preventable case: the contract cannot compel the maker to
+  // report, and the auditor — holding the quantity handle since the fill — can
+  // see exactly what was omitted. Needed to demonstrate the auditor's
+  // unreported-fills list against something real.
+  if (process.env.SKIP_REPORT === "true") {
+    console.log(`\n  SKIP_REPORT set — leaving fill #${fillId} settled but UNREPORTED.`);
+    console.log(`  The auditor can see this volume; the public has no print at all.`);
+    console.log(`\n=== ${pass} passed, ${fail} failed (reporting skipped) ===`);
+    console.log(`\norderId ${orderId}, fillId ${fillId}`);
+    if (fail > 0) process.exitCode = 1;
+    return;
+  }
+
   await send("maker reportTrade", await venue.write.reportTrade([fillId], n(maker)));
 
   const priceHandle = fill[3];

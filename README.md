@@ -281,12 +281,24 @@ Live on Ethereum Sepolia, no mocks in any demo path. See `deployments/*.sepolia.
 | Branchless fill arithmetic | verified on-chain across four real trades |
 | Disclosure regime | verified: price at settlement, volume after the deferral |
 | Public tape with live countdown | done |
-| Holder register, grant on demand | contract + script done (`scripts/register-demo.ts`) |
+| Holder register, grant on demand | done (`scripts/register-demo.ts`) |
+| Auditor route | done — regulator-vs-public side by side, unreported fills, register |
 
-**In progress:** the auditor route in the frontend — a side-by-side of what the
-auditor can decrypt versus what the public can currently see, plus a list of
-settled-but-unreported fills. The underlying disclosure asymmetry is already
-verified on-chain and demonstrable from scripts; what remains is the UI for it.
+The auditor route shows the disclosure gap directly: for each fill, what the
+regulator can decrypt beside what the public can currently see. A row is flagged
+**gap open** whenever those disagree, which is precisely when the deferral is
+doing its job. The public column distinguishes *withheld — deferred* from
+*nothing, unreported*, because those are different failures of visibility.
+
+It also lists **settled-but-unreported fills**. Reporting is an obligation on the
+maker and the contract cannot compel it, so a missing print is detectable rather
+than preventable — and the auditor, holding the quantity handle since the fill,
+can see exactly what was omitted. `SKIP_REPORT=true` on `live-trade.ts` produces
+one to demonstrate against.
+
+Note that the regulator column is only populated when the connected wallet
+actually holds the grants. Opened as anyone else it stays sealed, which is the
+protocol rather than the page.
 
 **Not built, deliberately:** anything resembling revocation. Nox has no
 `removeViewer` and no persistent `disallow`, so a grant cannot be taken back.

@@ -24,7 +24,7 @@ import {
   UnknownHandleError,
   type HandleClient,
 } from "@iexec-nox/handle";
-import { VENUE_ABI, NOX_ABI } from "./abi.js";
+import { VENUE_ABI, NOX_ABI, WRAPPER_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,7 @@ const state = {
   priceScale: 10000n,
   lisDeferral: 90n,
   auditor: "",
+  view: "market" as "market" | "auditor",
   pending: [] as Pending[],
   pendingSeq: 0,
 };
@@ -516,6 +517,225 @@ function render() {
   renderPending();
   renderBook();
   renderTape();
+  if (state.view === "auditor") void renderAuditor();
+}
+
+// ---------------------------------------------------------------------------
+// auditor route
+// ---------------------------------------------------------------------------
+
+function setView(view: "market" | "auditor") {
+  state.view = view;
+  $("viewMarket").classList.toggle("hidden", view !== "market");
+  $("viewAuditor").classList.toggle("hidden", view !== "auditor");
+  $("tabMarket").classList.toggle("active", view === "market");
+  $("tabAuditor").classList.toggle("active", view === "auditor");
+  render();
+}
+
+/**
+ * Renders the regulator's view against the public's, for the same fills at the
+ * same moment.
+ *
+ * The left column is only populated when the connected wallet actually holds the
+ * viewer grant — this page cannot and must not fake privileged access. If you
+ * open it as anyone else, the left column stays sealed, which is itself the
+ * demonstration.
+ */
+async function renderAuditor() {
+  const isAuditor =
+    state.account !== "" && state.account.toLowerCase() === state.auditor.toLowerCase();
+
+  $("auditorIdentity").innerHTML = !state.account
+    ? `Read-only. Connect the auditor wallet (<code>${state.auditor ? shortAddr(state.auditor) : "?"}</code>) to decrypt volumes.`
+    : isAuditor
+      ? `Connected as the auditor (<code>${shortAddr(state.account)}</code>). The left column below is decrypted with grants this address holds.`
+      : `Connected as <code>${shortAddr(state.account)}</code>, which is <strong>not</strong> the auditor
+         (<code>${shortAddr(state.auditor)}</code>). The left column stays sealed — that is the protocol, not this page.`;
+
+  renderAuditorFills(isAuditor);
+  renderUnreported();
+  await renderRegister();
+
+  // Decrypting is a network round trip per handle, so do it after the structure
+  // is on screen and fill the values in as they arrive.
+  if (isAuditor) void fillAuditorValues();
+}
+
+function renderAuditorFills(isAuditor: boolean) {
+  const el = $("auditorFills");
+  if (fills.length === 0) {
+    el.innerHTML = `<p class="empty">No fills yet.</p>`;
+    return;
+  }
+
+  el.innerHTML = [...fills]
+    .reverse()
+    .map((f) => {
+      const publicSees = f.volumePublic
+        ? f.volumeValue !== null
+          ? fmt(f.volumeValue)
+          : "published, resolving…"
+        : f.reported
+          ? "withheld — deferred"
+          : "nothing, unreported";
+
+      // A gap exists whenever the regulator can see a size the public cannot.
+      const gapOpen = !f.volumePublic;
+
+      const regulatorCell = isAuditor
+        ? `<span class="tape-value" id="audvol-${f.id}">decrypting…</span>`
+        : `<span class="tape-value private">requires the auditor's grant</span>`;
+
+      return `
+        <div class="row ${gapOpen ? "gap-open" : ""}">
+          <div class="row-main">
+            <div class="row-title">
+              <strong>fill #${f.id}</strong>
+              <span class="pill ${f.bucket === Bucket.LargeInScale ? "warn" : "muted"}">${
+                f.bucket === Bucket.LargeInScale ? "large in scale" : "standard"
+              }</span>
+              ${gapOpen ? `<span class="pill warn">gap open</span>` : `<span class="pill muted">public caught up</span>`}
+            </div>
+            <div class="gap-grid">
+              <div class="gap-cell regulator">
+                <label>regulator sees</label>
+                ${regulatorCell}
+              </div>
+              <div class="gap-cell public">
+                <label>public sees</label>
+                <span class="tape-value ${f.volumePublic ? "pub" : "private"}">${publicSees}</span>
+              </div>
+            </div>
+            <div class="row-meta">
+              <span>maker ${shortAddr(f.maker)}</span>
+              <span>taker ${shortAddr(f.taker)}</span>
+            </div>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+/** Decrypts each fill volume with the auditor's own grants. */
+async function fillAuditorValues() {
+  for (const f of fills) {
+    const node = document.getElementById(`audvol-${f.id}`);
+    if (!node) continue;
+    const v = await tryDecrypt(f.qty);
+    const current = document.getElementById(`audvol-${f.id}`);
+    if (!current) continue; // re-rendered underneath us
+    if (v === null) {
+      current.textContent = "not yet resolved";
+      current.className = "tape-value pending";
+    } else {
+      current.textContent = fmt(v);
+      current.className = "tape-value";
+    }
+  }
+}
+
+/**
+ * Fills that settled but were never reported.
+ *
+ * This is the detectable-not-preventable story made concrete: the contract has
+ * no way to compel a maker to print a trade, but the auditor was granted the
+ * quantity at fill time, so an omission is visible rather than invisible.
+ */
+function renderUnreported() {
+  const el = $("auditorUnreported");
+  const unreported = fills.filter((f) => !f.reported);
+
+  if (unreported.length === 0) {
+    el.innerHTML = `<p class="empty">Every settled fill has been reported.</p>`;
+    return;
+  }
+
+  el.innerHTML = [...unreported]
+    .reverse()
+    .map(
+      (f) => `
+        <div class="row unreported">
+          <div class="row-main">
+            <div class="row-title">
+              <strong>fill #${f.id}</strong>
+              <span class="pill pub">no print submitted</span>
+            </div>
+            <div class="row-meta">
+              <span>reporting entity ${shortAddr(f.maker)}</span>
+              <span>taker ${shortAddr(f.taker)}</span>
+              <span class="muted">visible to the regulator, not preventable by the contract</span>
+            </div>
+          </div>
+        </div>`,
+    )
+    .join("");
+}
+
+/** Register access is per-holder and granted by the issuer, never automatic. */
+async function renderRegister() {
+  const el = $("auditorRegister");
+
+  if (!CONFIG.sharesWrapper) {
+    el.innerHTML = `<p class="empty">Set VITE_SHARES_WRAPPER to inspect the holder register.</p>`;
+    return;
+  }
+  if (!state.auditor) {
+    el.innerHTML = `<p class="empty">Connect to load the register.</p>`;
+    return;
+  }
+
+  // Holders worth checking: whoever appears in the book or the tape.
+  const holders = [...new Set([...orders.map((o) => o.maker), ...fills.flatMap((f) => [f.maker, f.taker])])];
+  if (holders.length === 0) {
+    el.innerHTML = `<p class="empty">No holders on record yet.</p>`;
+    return;
+  }
+
+  const provider = state.signer ?? readOnlyProvider();
+  const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
+
+  const rows: string[] = [];
+  for (const holder of holders) {
+    let handle = ZeroHash;
+    try {
+      handle = await wrapper.balanceHandle(holder);
+    } catch {
+      continue;
+    }
+    if (handle === ZeroHash) continue;
+
+    let granted = false;
+    try {
+      granted = await state.nox!.isViewer(handle, state.auditor);
+    } catch {
+      /* leave false */
+    }
+
+    rows.push(`
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title">
+            <strong>${shortAddr(holder)}</strong>
+            <span class="pill ${granted ? "ok" : "muted"}">${
+              granted ? "disclosed to the auditor" : "sealed"
+            }</span>
+          </div>
+          <div class="row-meta">
+            <span>balance <code class="handle">${short(handle)}</code></span>
+            <span>${
+              granted
+                ? "the issuer granted access to this holder"
+                : "the issuer has not disclosed this holder"
+            }</span>
+          </div>
+        </div>
+      </div>`);
+  }
+
+  el.innerHTML = rows.length
+    ? rows.join("")
+    : `<p class="empty">No wrapped balances yet — nothing in the register to disclose.</p>`;
 }
 
 function renderPending() {
@@ -761,6 +981,9 @@ async function onFill(orderId: number, bucket: number) {
 // ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
+
+$("tabMarket").addEventListener("click", () => setView("market"));
+$("tabAuditor").addEventListener("click", () => setView("auditor"));
 
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("postForm").addEventListener("submit", (e) => onPost(e).catch((e) => banner(e.message, "error")));
