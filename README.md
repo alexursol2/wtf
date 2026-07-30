@@ -284,6 +284,19 @@ The tape shows each print in one of four states, driven entirely by chain state:
 
 ---
 
+### Deploying the frontend (Vercel)
+
+The repository root is a monorepo with no `package.json`, so a default Vercel import finds nothing to build and serves `404: NOT_FOUND`. `vercel.json` at the root fixes that by pointing install, build and output at `frontend/`. No dashboard change is needed — but if you would rather configure it there, set **Root Directory** to `frontend` and delete this file, since the two approaches conflict.
+
+The build also needs the `VITE_*` variables set in **Settings → Environment Variables**, because `.env.local` is gitignored and never reaches the build. Without them the app loads and tells you no deployment is configured:
+
+```
+VITE_VENUE, VITE_CHAIN_ID, VITE_SHARES_WRAPPER, VITE_CASH_WRAPPER,
+VITE_NOX_GATEWAY_URL, VITE_NOX_SUBGRAPH_URL
+```
+
+> **Do not put a private RPC key in `VITE_RPC_URL` on a public deployment.** Vite inlines every `VITE_*` variable into the client bundle, so an Alchemy key there is readable by anyone who opens the page. Leave it unset — the app falls back to a public endpoint — or use a key you are willing to publish.
+
 ## Chains
 
 `Nox.noxComputeContract()` hardcodes three chains. Anything else reverts `Nox: Unsupported chain`.
