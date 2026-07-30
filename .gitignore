@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# hardhat / solidity build output
+artifacts/
+cache/
+typechain-types/
+*.dbg.json
+
+# frontend build
+dist/
+.vite/
+
+# environment — never commit keys
+.env
+.env.*
+!.env.example
+
+# local deployment records are kept (they are the demo addresses), but local
+# throwaway chains are not
+deployments/*.hardhat.json
+
+# editor / OS
+.DS_Store
+Thumbs.db
+*.log

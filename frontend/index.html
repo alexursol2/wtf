@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deferral Venue — confidential RFQ for tokenized bonds</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <div>
+          <h1>Deferral Venue</h1>
+          <p class="sub">Confidential RFQ for tokenized bonds &middot; modelled on the MiFIR transparency regime</p>
+        </div>
+      </div>
+      <div class="wallet">
+        <span id="netLabel" class="pill muted">not connected</span>
+        <button id="connect" class="primary">Connect wallet</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <main>
+      <!-- ---------------- own position ---------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Your position</h2>
+          <span class="hint">handles are ciphertext — only you and the contract hold a grant</span>
+        </div>
+        <div class="grid2">
+          <div class="stat">
+            <label>Escrowed cash</label>
+            <code id="cashHandle" class="handle">—</code>
+            <span id="cashState" class="pill muted">no handle yet</span>
+          </div>
+          <div class="stat">
+            <label>Escrowed shares</label>
+            <code id="sharesHandle" class="handle">—</code>
+            <span id="sharesState" class="pill muted">no handle yet</span>
+          </div>
+        </div>
+        <p class="note">
+          Balances decrypt off-chain against your viewer grant, via the Nox handle SDK and
+          gateway. This UI reports the real on-chain grant state; it never invents a number.
+        </p>
+      </section>
+
+      <!-- ---------------- post ---------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Post an ask</h2>
+          <span class="hint">minimum size is set at LIS — the book is dark under a waiver that is not subject to the volume cap</span>
+        </div>
+        <form id="postForm" class="form">
+          <div class="field">
+            <label for="qty">Quantity</label>
+            <input id="qty" type="number" min="1" step="1" placeholder="50000" required />
+          </div>
+          <div class="field">
+            <label for="price">Price <span class="muted">(98.7500 → 987500)</span></label>
+            <input id="price" type="number" min="1" step="1" placeholder="987500" required />
+          </div>
+          <div class="field">
+            <label for="expiry">Expires in (minutes)</label>
+            <input id="expiry" type="number" min="1" step="1" value="60" required />
+          </div>
+          <button type="submit" class="primary">Post ask</button>
+        </form>
+      </section>
+
+      <!-- ---------------- book ---------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Order book</h2>
+          <span class="hint">dark pre-trade: sizes and prices are handles, not numbers</span>
+        </div>
+        <div id="book" class="rows">
+          <p class="empty">No orders yet.</p>
+        </div>
+      </section>
+
+      <!-- ---------------- tape ---------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>The tape</h2>
+          <span class="hint">price prints at settlement &middot; volume prints on the deferral schedule</span>
+        </div>
+        <div id="tape" class="rows">
+          <p class="empty">No prints yet.</p>
+        </div>
+        <p class="note">
+          <strong>notional = qty &times; price / <span id="priceScale">10000</span></strong>.
+          A print marked <em>deferred</em> has a published price and a withheld volume — the
+          deferral flag itself is public, exactly as it is under the real regime.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Grants in Nox are permanent — there is no revocation primitive, and a published price or
+        volume can never be un-published. Amount-gated compliance rules are not enforced on the
+        encrypted path. Both are documented limitations, not oversights; see the README leak model.
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

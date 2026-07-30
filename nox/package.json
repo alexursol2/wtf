@@ -1,0 +1,24 @@
+{
+  "name": "deferral-venue-nox",
+  "version": "0.1.0",
+  "description": "Confidential RFQ venue for tokenized bonds - Nox sub-project (Layers 2 & 3)",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "demo": "hardhat run scripts/demo-trade.ts",
+    "deploy:local": "hardhat run scripts/deploy.ts",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia",
+    "deploy:arbitrumSepolia": "hardhat run scripts/deploy.ts --network arbitrumSepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.0",
+    "hardhat": "^3.0.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@iexec-nox/nox-protocol-contracts": "0.2.4",
+    "encrypted-types": "^0.0.4"
+  }
+}
