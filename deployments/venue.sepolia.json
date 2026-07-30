@@ -6,10 +6,11 @@
   "identityRegistry": "0x9eF9D65E08Acc1fc91bF2815409Ac6782e20eF66",
   "bondToken": "0xb0ba5244DF094160Ff31E523Fa5F8a51124f94E7",
   "cashToken": "0xb956f6651ec9d7d53c89ae4fb3068988f660b4db",
-  "sharesWrapper": "0xa1ebf88faa39a0aad406376bdb2b47ad3e4aac9e",
-  "cashWrapper": "0xc35a6a83acc7375d3f33ca222fdff24486e67692",
+  "sharesWrapper": "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
+  "cashWrapper": "0x89ef295d85401890736e9b07e7498e4b77531e63",
   "venue": "0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569",
   "auditor": "0xACc8D0072bB98eA0764704D1CA585140Fa981cc7",
   "priceScale": 10000,
-  "lisDeferralSeconds": 90
+  "lisDeferralSeconds": 90,
+  "wrappersDeployedAt": "2026-07-30T15:32:37.157Z"
 }

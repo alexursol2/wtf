@@ -270,6 +270,30 @@ A hardcoded address proves the contract exists, not that the Ingestor and Runner
 
 ---
 
+## Status
+
+Live on Ethereum Sepolia, no mocks in any demo path. See `deployments/*.sepolia.json`.
+
+| | |
+|---|---|
+| Nox off-chain stack serves Sepolia | confirmed — round trip resolves in ~2s |
+| Real T-REX (ERC-3643) suite | deployed, both wrappers registered as verified holders |
+| Branchless fill arithmetic | verified on-chain across four real trades |
+| Disclosure regime | verified: price at settlement, volume after the deferral |
+| Public tape with live countdown | done |
+| Holder register, grant on demand | contract + script done (`scripts/register-demo.ts`) |
+
+**In progress:** the auditor route in the frontend — a side-by-side of what the
+auditor can decrypt versus what the public can currently see, plus a list of
+settled-but-unreported fills. The underlying disclosure asymmetry is already
+verified on-chain and demonstrable from scripts; what remains is the UI for it.
+
+**Not built, deliberately:** anything resembling revocation. Nox has no
+`removeViewer` and no persistent `disallow`, so a grant cannot be taken back.
+Rotation is the honest mitigation and is tested (`does not extend a register
+grant to the holder's FUTURE balances`), but it is not revocation and is not
+claimed as such.
+
 ## Provenance
 
 Written during the hackathon: `ConfidentialWrapper.sol`, `DeferralVenue.sol`, both deploy scripts, the demo script, the test suite and harness, and the frontend.

@@ -177,6 +177,84 @@ describe("ConfidentialWrapper", () => {
     );
   });
 
+  // ---------------- selective disclosure of the register ----------------
+
+  it("keeps the holder register private until the issuer grants it", async () => {
+    // This is the grant-on-demand beat, and the reason it is filmed on the
+    // REGISTER rather than on fill volumes: fill volumes are auto-granted to the
+    // auditor at fill time, so there is no "before" to show. The register has
+    // one.
+    const [, , , auditor] = await ctx.viem.getWalletClients();
+    await wrapAs(ctx.alice, parseUnits("100", 18));
+
+    const handle = await wrapper.read.balanceHandle([ctx.alice.account.address]);
+
+    assert.equal(
+      await noxRead("isViewer", [handle, auditor.account.address]),
+      false,
+      "the auditor could read the register before being granted access",
+    );
+
+    await wrapper.write.grantRegisterAccess([ctx.alice.account.address, auditor.account.address], {
+      account: ctx.deployer.account,
+    });
+
+    assert.equal(
+      await noxRead("isViewer", [handle, auditor.account.address]),
+      true,
+      "the grant did not take effect",
+    );
+
+    // Granting a viewer must not publish the value to everyone.
+    assert.equal(await noxRead("isPubliclyDecryptable", [handle]), false);
+  });
+
+  it("lets only the issuer disclose the register", async () => {
+    await wrapAs(ctx.alice, parseUnits("100", 18));
+    await assert.rejects(
+      wrapper.write.grantRegisterAccess([ctx.alice.account.address, ctx.bob.account.address], {
+        account: ctx.bob.account,
+      }),
+      /not owner/,
+    );
+  });
+
+  it("refuses to grant access to a holder with no balance handle", async () => {
+    const [, , , auditor] = await ctx.viem.getWalletClients();
+    await assert.rejects(
+      wrapper.write.grantRegisterAccess([ctx.bob.account.address, auditor.account.address], {
+        account: ctx.deployer.account,
+      }),
+      /no balance handle/,
+    );
+  });
+
+  it("does not extend a register grant to the holder's FUTURE balances", async () => {
+    // Rotation, not revocation. Nox has no way to take a grant back, but a
+    // transfer mints a fresh handle — so a party shown today's balance does not
+    // thereby see tomorrow's. Worth pinning down, because it is the only honest
+    // mitigation available and it is easy to overclaim.
+    const [, , , auditor] = await ctx.viem.getWalletClients();
+    await wrapAs(ctx.alice, parseUnits("100", 18));
+
+    const before = await wrapper.read.balanceHandle([ctx.alice.account.address]);
+    await wrapper.write.grantRegisterAccess([ctx.alice.account.address, auditor.account.address], {
+      account: ctx.deployer.account,
+    });
+    assert.equal(await noxRead("isViewer", [before, auditor.account.address]), true);
+
+    // Alice's balance moves on.
+    await wrapAs(ctx.alice, parseUnits("50", 18));
+    const after = await wrapper.read.balanceHandle([ctx.alice.account.address]);
+    assert.notEqual(after, before, "balance handle did not rotate on a state change");
+
+    assert.equal(
+      await noxRead("isViewer", [after, auditor.account.address]),
+      false,
+      "the old grant leaked into the new balance handle",
+    );
+  });
+
   // ---------------- unwrap ----------------
 
   it("publishes only the success FLAG on an unwrap request, never a balance", async () => {

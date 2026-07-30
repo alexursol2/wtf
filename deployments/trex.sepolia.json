@@ -32,6 +32,16 @@
       "identity": "0xeD51111c3b672cD40beE0EfdE281d66F8742602d",
       "country": 250,
       "verified": true
+    },
+    "0x28bf0728213275b52c3285a1423bd7e51acb4dd8": {
+      "identity": "0xDD1127FbB67bBD07B2AB90056204d3c4F264BDdB",
+      "country": 250,
+      "verified": true
+    },
+    "0x89ef295d85401890736e9b07e7498e4b77531e63": {
+      "identity": "0x0424BD62F15449219E772a018Af1C7b38DE8DDE7",
+      "country": 250,
+      "verified": true
     }
   }
 }

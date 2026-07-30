@@ -98,6 +98,7 @@ contract ConfidentialWrapper {
     event UnwrapRequested(uint256 indexed requestId, address indexed account, uint256 amount);
     event Unwrapped(uint256 indexed requestId, address indexed account, uint256 amount);
     event CountryAllowed(uint16 indexed country, bool allowed);
+    event RegisterAccessGranted(address indexed holder, address indexed viewer);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -118,6 +119,38 @@ contract ConfidentialWrapper {
         allowedCountry[country] = allowed;
         countryGateActive = true;
         emit CountryAllowed(country, allowed);
+    }
+
+    // ------------------------------------------------------------------
+    // Selective disclosure of the holder register
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Grants `viewer` the ability to decrypt `holder`'s balance.
+     * @dev Issuer-only, and deliberately NOT automatic.
+     *
+     * This is the difference between the two disclosure paths in this project.
+     * Fill volumes are granted to the auditor at the moment of the fill, because
+     * the regulator must be able to see a trade before the public deferral
+     * elapses — that is the whole regulatory story. The holder REGISTER is not:
+     * it is disclosed by the issuer, on request, one holder at a time.
+     *
+     * Both are `addViewer`, and neither can be undone. There is no revocation
+     * primitive anywhere in Nox — no `removeViewer`, no persistent `disallow`,
+     * only `disallowTransient` scoped to a single transaction. So this grant is
+     * PERMANENT for the handle it names.
+     *
+     * The one honest mitigation is rotation, not revocation: because a transfer
+     * mints a fresh handle, a party granted the current balance handle does not
+     * thereby see future balances. They keep what they were shown, forever, and
+     * nothing more. That is a real property, not a workaround — but do not call
+     * it revocation.
+     */
+    function grantRegisterAccess(address holder, address viewer) external onlyOwner {
+        euint256 balance = _balances[holder];
+        require(euint256.unwrap(balance) != bytes32(0), "no balance handle");
+        Nox.addViewer(balance, viewer);
+        emit RegisterAccessGranted(holder, viewer);
     }
 
     /// Identity + country re-enforcement. Called on every path that credits a
