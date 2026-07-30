@@ -199,9 +199,19 @@ with `scripts/fund-accounts.ts`.
 `viaIR` is on. `fill()` does not compile without it — stack too deep. Compilation is noticeably slower; this is expected.
 
 ```bash
-npm test          # 28 tests
+npm test          # 32 tests
 npm run demo      # one full trade, narrated
 ```
+
+Against a live deployment:
+
+```bash
+npx hardhat run scripts/task0-liveness.ts --network sepolia   # is the off-chain stack up?
+npx hardhat run scripts/live-trade.ts     --network sepolia   # one real trade, every value checked
+FILL_ID=0 npx hardhat run scripts/publish-volume.ts --network sepolia
+```
+
+`live-trade.ts` is the script that matters: it settles a real trade and asserts every decrypted number, including that the fill settles at the **maker's** price rather than the taker's bid. Its expectations are deltas on the opening balances, so it is safe to re-run.
 
 Deploy against a live Layer 1:
 
@@ -229,6 +239,10 @@ Full order: T-REX deploy → note `IDENTITY_REGISTRY` and `BOND_TOKEN` → Nox d
 cd ../frontend && npm install
 VITE_VENUE=0x… VITE_CHAIN_ID=11155111 npm run dev
 ```
+
+**The tape loads without a wallet.** Published prices and volumes are public by design, so a regulator or a passer-by can read the prints without connecting anything. A wallet is only needed to trade or to decrypt your own balances.
+
+The tape shows each print in one of four states, driven entirely by chain state: *unreported* → *price published, volume counting down* → *publishable now* → *fully printed*. Notional is deliberately withheld until both halves are public, because that gap is what the deferral actually creates.
 
 ---
 

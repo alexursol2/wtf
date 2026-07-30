@@ -91,10 +91,15 @@
         <div id="tape" class="rows">
           <p class="empty">No prints yet.</p>
         </div>
+        <p class="caption">
+          Deferral compressed to <strong id="deferralSeconds">90</strong> seconds for the demo.
+          The real regime defers non-equity volume to the end of the following quarter.
+        </p>
         <p class="note">
-          <strong>notional = qty &times; price / <span id="priceScale">10000</span></strong>.
-          A print marked <em>deferred</em> has a published price and a withheld volume — the
-          deferral flag itself is public, exactly as it is under the real regime.
+          <strong>notional = qty &times; price / <span id="priceScale">10000</span></strong> &mdash;
+          bonds quote 98.7500 as 987500. A print with a published price and a withheld volume is
+          the regime working: the deferral flag itself is public, exactly as under MiFIR, so
+          declaring a fill large-in-scale announces that it was large without revealing how large.
         </p>
       </section>
     </main>

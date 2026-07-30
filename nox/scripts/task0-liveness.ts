@@ -49,17 +49,13 @@ async function main() {
   // A mock registry is fine here: we are testing infrastructure, not the
   // product. Note the DeferralVenue constructor calls Nox.toEuint256, which is
   // a real NoxCompute call — so a successful deploy is itself a partial signal.
-  // Public RPCs are load-balanced, so eth_getTransactionCount can report a
-  // stale value immediately after a send — which yields either "nonce too low"
-  // or "replacement transaction underpriced" on the next transaction. Track the
-  // nonce locally and pass it explicitly instead of trusting the node.
-  let nonce = await publicClient.getTransactionCount({
-    address: deployer.account.address,
-    blockTag: "pending",
-  });
-  const nextNonce = () => nonce++;
-  console.log(`${stamp()} starting nonce ${nonce}`);
-
+  //
+  // Every send below is awaited to inclusion before the next is built.
+  // `deployContract` already waits for confirmation; `contract.write.*` does
+  // NOT, so those are wrapped in `settle`. Skipping that is what produced
+  // "replacement transaction underpriced" and then "nonce too low" on the first
+  // two attempts at this script, against a load-balanced public RPC that served
+  // a stale eth_getTransactionCount.
   const settle = async (label: string, hash: `0x${string}`) => {
     const r = await publicClient.waitForTransactionReceipt({ hash });
     console.log(`${stamp()}   ${label} mined in block ${r.blockNumber}`);
@@ -67,19 +63,18 @@ async function main() {
   };
 
   console.log(`\n${stamp()} deploying MockIdentityRegistry...`);
-  const registry = await viem.deployContract("MockIdentityRegistry", [], { nonce: nextNonce() });
+  const registry = await viem.deployContract("MockIdentityRegistry", []);
   console.log(`${stamp()}   ${registry.address}`);
 
   await settle(
     "setVerified",
-    await registry.write.setVerified([deployer.account.address, true], { nonce: nextNonce() }),
+    await registry.write.setVerified([deployer.account.address, true]),
   );
 
   console.log(`${stamp()} deploying DeferralVenue (constructor calls NoxCompute)...`);
   const venue = await viem.deployContract(
     "DeferralVenue",
     [registry.address, deployer.account.address],
-    { nonce: nextNonce() },
   );
   console.log(`${stamp()}   ${venue.address}`);
   console.log(`${stamp()}   on-chain Nox calls work (toEuint256 did not revert)`);
@@ -98,7 +93,7 @@ async function main() {
   // and grants the depositor a viewer grant on the RESULT handle. That result is
   // what has to be computed off-chain.
   console.log(`\n${stamp()} depositCash (validates proof, then Nox.add)...`);
-  const txHash = await venue.write.depositCash([handle, handleProof], { nonce: nextNonce() });
+  const txHash = await venue.write.depositCash([handle, handleProof]);
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   console.log(`${stamp()}   block ${receipt.blockNumber}, gas ${receipt.gasUsed}, tx ${txHash}`);
 

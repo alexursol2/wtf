@@ -57,6 +57,33 @@ export function normalizeKey(raw: string | undefined): Hex | undefined {
 export const ROLES = ["DEPLOYER", "MAKER", "TAKER", "AUDITOR"] as const;
 export type Role = (typeof ROLES)[number];
 
+/**
+ * True when a decrypt failure means "wait", not "denied" or "broken".
+ *
+ * There are THREE transient classes, and only two of them are exported from
+ * `@iexec-nox/handle`:
+ *
+ *  - NotYetComputedHandleError — the TEE Runner has not resolved it yet.
+ *  - UnknownHandleError        — the indexer has not seen the handle yet.
+ *  - SubgraphOutOfSyncError    — the subgraph trails the chain head. This one is
+ *    thrown but NOT exported, so it cannot be caught with `instanceof` and has
+ *    to be matched on its message. It fires on a lag as small as one block, and
+ *    treating it as fatal makes a perfectly good value look permanently
+ *    unreadable — which is exactly the mistake this helper exists to prevent.
+ */
+export function isTransient(e: unknown): boolean {
+  const name = (e as any)?.constructor?.name ?? "";
+  if (
+    name === "NotYetComputedHandleError" ||
+    name === "UnknownHandleError" ||
+    name === "SubgraphOutOfSyncError"
+  ) {
+    return true;
+  }
+  const message = (e as any)?.message ?? "";
+  return /not yet computed|unknown handle|out of sync/i.test(message);
+}
+
 /** Private keys by role, in the order Hardhat should register them as signers. */
 export function roleKeys(): { role: Role; key: Hex }[] {
   loadEnv();

@@ -17,7 +17,7 @@
  *    placeholder. A published price is genuinely public and could be decrypted
  *    by anyone; an unpublished one is shown as private, not as zero.
  */
-import { BrowserProvider, Contract, JsonRpcSigner, ZeroHash } from "ethers";
+import { BrowserProvider, Contract, JsonRpcSigner, JsonRpcProvider, Wallet, ZeroHash } from "ethers";
 import {
   createEthersHandleClient,
   NotYetComputedHandleError,
@@ -39,6 +39,15 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => {
 
 const short = (h: string) => (h && h !== ZeroHash ? `${h.slice(0, 10)}…${h.slice(-6)}` : "—");
 const shortAddr = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+/** Thousands separators. These are integers — the scale is applied separately. */
+const fmt = (v: bigint) => v.toLocaleString("en-US");
+
+/** mm:ss for the deferral countdown. Clamped at zero. */
+function mmss(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
 
 function banner(message: string, kind: "error" | "info" | "ok" = "info") {
   const el = $("banner");
@@ -120,21 +129,71 @@ async function submit(label: string, fn: () => Promise<any>) {
  * The `app` binding is the CONTRACT that will call fromExternal, not the user.
  * Passing the wallet address instead reverts with "App mismatch".
  */
-async function getHandleClient(): Promise<HandleClient> {
-  if (!state.signer) throw new Error("connect a wallet first");
-  if (state.handleClient) return state.handleClient;
-
+function handleConfigOverride(): any {
   const override: Record<string, string> = {};
   const gatewayUrl = (import.meta.env as any).VITE_NOX_GATEWAY_URL;
   const subgraphUrl = (import.meta.env as any).VITE_NOX_SUBGRAPH_URL;
   if (gatewayUrl) override.gatewayUrl = gatewayUrl;
   if (subgraphUrl) override.subgraphUrl = subgraphUrl;
+  return Object.keys(override).length > 0 ? override : undefined;
+}
 
-  state.handleClient = await createEthersHandleClient(
-    state.signer as any,
-    Object.keys(override).length > 0 ? (override as any) : undefined,
-  );
+async function getHandleClient(): Promise<HandleClient> {
+  if (state.handleClient) return state.handleClient;
+
+  if (state.signer) {
+    state.handleClient = await createEthersHandleClient(state.signer as any, handleConfigOverride());
+    return state.handleClient;
+  }
+
+  // Read-only mode. Published prices and volumes are PUBLIC by design, so
+  // reading the tape must not require a wallet — a regulator or a passer-by
+  // should be able to check the prints. The SDK insists on a client bound to an
+  // account even for publicDecrypt, so we hand it a throwaway random wallet: it
+  // holds nothing, is never funded, and never signs a transaction.
+  const ephemeral = Wallet.createRandom().connect(readOnlyProvider());
+  state.handleClient = await createEthersHandleClient(ephemeral as any, handleConfigOverride());
   return state.handleClient;
+}
+
+/** Provider for reads when no wallet is connected. */
+function readOnlyProvider(): JsonRpcProvider {
+  const url =
+    (import.meta.env as any).VITE_RPC_URL ??
+    (CONFIG.expectedChainId === 421614
+      ? "https://arbitrum-sepolia-rpc.publicnode.com"
+      : "https://ethereum-sepolia-rpc.publicnode.com");
+  return new JsonRpcProvider(url, CONFIG.expectedChainId);
+}
+
+/**
+ * Loads the venue read-only so the public tape renders before any wallet is
+ * connected. Deliberately does NOT touch escrow balances — those need a viewer
+ * grant, which needs a real signer.
+ */
+async function connectReadOnly() {
+  if (!CONFIG.venue || !CONFIG.expectedChainId) return;
+
+  const provider = readOnlyProvider();
+  const noxAddress = NOX_COMPUTE[CONFIG.expectedChainId];
+  if (!noxAddress) return;
+
+  state.venue = new Contract(CONFIG.venue, VENUE_ABI, provider);
+  state.nox = new Contract(noxAddress, NOX_ABI, provider);
+
+  try {
+    state.priceScale = await state.venue.PRICE_SCALE();
+    state.lisDeferral = await state.venue.LIS_DEFERRAL();
+    state.auditor = await state.venue.auditor();
+    $("priceScale").textContent = state.priceScale.toString();
+    $("deferralSeconds").textContent = state.lisDeferral.toString();
+  } catch {
+    return; // leave the UI in its disconnected state
+  }
+
+  $("netLabel").textContent = `${CHAIN_NAMES[CONFIG.expectedChainId]} · read-only`;
+  $("netLabel").className = "pill";
+  await refresh();
 }
 
 async function encryptInput(value: bigint): Promise<{ handle: string; proof: string }> {
@@ -155,10 +214,24 @@ async function tryDecrypt(handle: string): Promise<bigint | null> {
     const { value } = await client.decrypt(handle as any);
     return BigInt(value as bigint);
   } catch (e: any) {
-    if (e instanceof NotYetComputedHandleError || e instanceof UnknownHandleError) return null;
-    if (/not yet computed|unknown handle/i.test(e?.message ?? "")) return null;
+    if (isTransient(e)) return null;
     throw e;
   }
+}
+
+/**
+ * True when a decrypt failure means "wait", not "denied".
+ *
+ * Three transient classes, and only two are exported from the SDK.
+ * `SubgraphOutOfSyncError` is thrown but not exported, so it cannot be caught by
+ * `instanceof` and has to be matched on its message — and it fires on a lag as
+ * small as one block. Treating it as fatal makes a perfectly readable value look
+ * permanently unavailable, which is exactly the confusion this UI must avoid.
+ */
+function isTransient(e: any): boolean {
+  if (e instanceof NotYetComputedHandleError || e instanceof UnknownHandleError) return true;
+  if (e?.constructor?.name === "SubgraphOutOfSyncError") return true;
+  return /not yet computed|unknown handle|out of sync/i.test(e?.message ?? "");
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +289,9 @@ async function connect() {
     state.lisDeferral = await state.venue.LIS_DEFERRAL();
     state.auditor = await state.venue.auditor();
     $("priceScale").textContent = state.priceScale.toString();
+    // Read the deferral off the contract rather than hardcoding it in the
+    // caption — the on-screen number must match what the chain will enforce.
+    $("deferralSeconds").textContent = state.lisDeferral.toString();
   } catch {
     banner("Could not read the venue — is VITE_VENUE correct for this chain?", "error");
     return;
@@ -251,6 +327,41 @@ interface FillRow {
   volumePublished: boolean;
   pricePublic: boolean;
   volumePublic: boolean;
+  /** Plaintext, once publicly decryptable. null while private OR while the
+   *  gateway's indexer is still catching up — the two are indistinguishable
+   *  from the client, so neither is ever rendered as a number. */
+  priceValue: bigint | null;
+  volumeValue: bigint | null;
+}
+
+/**
+ * Public values, cached by handle.
+ *
+ * Worth caching for two reasons: a published price never changes, and the
+ * countdown re-renders every second — refetching through the gateway on each
+ * tick would hammer it for no reason.
+ */
+const publicValues = new Map<string, bigint>();
+
+/**
+ * Reads a handle that has been marked publicly decryptable. Anyone can do this;
+ * that is the point of publication. Returns null while the gateway has not yet
+ * served it, which happens for a few seconds after allowPublicDecryption because
+ * its indexer trails the chain.
+ */
+async function tryPublicDecrypt(handle: string): Promise<bigint | null> {
+  if (!handle || handle === ZeroHash) return null;
+  const cached = publicValues.get(handle);
+  if (cached !== undefined) return cached;
+  try {
+    const client = await getHandleClient();
+    const { value } = await client.publicDecrypt(handle as any);
+    const v = BigInt(value as bigint);
+    publicValues.set(handle, v);
+    return v;
+  } catch {
+    return null;
+  }
 }
 
 let orders: OrderRow[] = [];
@@ -305,6 +416,8 @@ async function refresh() {
   for (let i = 0; i < fillCount; i++) {
     try {
       const f = await state.venue.fills(i);
+      const pricePublic = await isPublic(f.price);
+      const volumePublic = await isPublic(f.qty);
       nextFills.push({
         id: i,
         maker: f.maker,
@@ -315,8 +428,12 @@ async function refresh() {
         deferredUntil: f.volumeDeferredUntil,
         reported: f.reported,
         volumePublished: f.volumePublished,
-        pricePublic: await isPublic(f.price),
-        volumePublic: await isPublic(f.qty),
+        pricePublic,
+        volumePublic,
+        // Only fetch what is genuinely public. Asking for a private handle
+        // would fail anyway, and the tape must never show a withheld number.
+        priceValue: pricePublic ? await tryPublicDecrypt(f.price) : null,
+        volumeValue: volumePublic ? await tryPublicDecrypt(f.qty) : null,
       });
     } catch {
       /* skip */
@@ -340,7 +457,9 @@ async function isPublic(handle: string): Promise<boolean> {
 }
 
 async function refreshOwnPosition() {
-  if (!state.venue || !state.nox) return;
+  // Escrow balances need a viewer grant, which needs a real signer. In
+  // read-only mode there is no "own" position to show.
+  if (!state.venue || !state.nox || !state.account) return;
 
   for (const [kind, handleEl, stateEl] of [
     ["cash", "cashHandle", "cashState"],
@@ -509,22 +628,44 @@ function renderTape() {
 
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  el.innerHTML = fills
+  // Newest print first — a tape reads top-down.
+  el.innerHTML = [...fills]
+    .reverse()
     .map((f) => {
       const isMaker = f.maker.toLowerCase() === state.account.toLowerCase();
       const lis = f.bucket === Bucket.LargeInScale;
       const deferralPassed = f.reported && now >= f.deferredUntil;
+      const secondsLeft = f.reported ? Number(f.deferredUntil - now) : 0;
 
-      const price = f.pricePublic
-        ? `<span class="pill pub">price published</span>`
-        : `<span class="pill muted">price private</span>`;
-      const volume = f.volumePublic
-        ? `<span class="pill pub">volume published</span>`
-        : f.reported
-          ? `<span class="pill warn">volume deferred${
-              deferralPassed ? " — publishable now" : ` until ${new Date(Number(f.deferredUntil) * 1000).toLocaleTimeString()}`
-            }</span>`
-          : `<span class="pill muted">unreported</span>`;
+      // --- price: published at settlement, so show the real number ---
+      const priceCell = f.pricePublic
+        ? f.priceValue !== null
+          ? `<span class="tape-value pub">${fmt(f.priceValue)}</span>`
+          : `<span class="tape-value pending">published, resolving…</span>`
+        : `<span class="tape-value private">withheld</span>`;
+
+      // --- volume: the whole point. Countdown while deferred. ---
+      let volumeCell: string;
+      if (f.volumePublic) {
+        volumeCell =
+          f.volumeValue !== null
+            ? `<span class="tape-value pub">${fmt(f.volumeValue)}</span>`
+            : `<span class="tape-value pending">published, resolving…</span>`;
+      } else if (!f.reported) {
+        volumeCell = `<span class="tape-value private">unreported</span>`;
+      } else if (deferralPassed) {
+        volumeCell = `<span class="tape-value ready">publishable now</span>`;
+      } else {
+        volumeCell = `<span class="tape-value countdown" data-countdown="${f.deferredUntil}">volume in ${mmss(secondsLeft)}</span>`;
+      }
+
+      // Notional only makes sense once BOTH halves are public — which is
+      // precisely the asymmetry the deferral creates, so show the gap rather
+      // than filling it in.
+      const notional =
+        f.priceValue !== null && f.volumeValue !== null
+          ? `<span>notional <strong>${fmt((f.volumeValue * f.priceValue) / state.priceScale)}</strong></span>`
+          : `<span class="muted">notional unknown until volume prints</span>`;
 
       // Reporting is the maker's act — they are the reporting entity. An
       // unreported fill is visible to the auditor but not preventable here.
@@ -536,18 +677,21 @@ function renderTape() {
         );
 
       return `
-        <div class="row">
+        <div class="row tape-row">
           <div class="row-main">
             <div class="row-title">
               <strong>fill #${f.id}</strong>
-              <span class="pill ${lis ? "" : "muted"}">${lis ? "large in scale" : "standard"}</span>
-              ${price}${volume}
+              <span class="pill ${lis ? "warn" : "muted"}">${lis ? "large in scale" : "standard"}</span>
+              ${f.reported ? "" : `<span class="pill muted">not yet reported</span>`}
+            </div>
+            <div class="tape-grid">
+              <div><label>price</label>${priceCell}</div>
+              <div><label>volume</label>${volumeCell}</div>
             </div>
             <div class="row-meta">
               <span>maker ${shortAddr(f.maker)}</span>
               <span>taker ${shortAddr(f.taker)}</span>
-              <span>price <code class="handle">${short(f.price)}</code></span>
-              <span>qty <code class="handle">${short(f.qty)}</code></span>
+              ${notional}
             </div>
           </div>
           <div class="actions">${actions.join("")}</div>
@@ -621,10 +765,42 @@ async function onFill(orderId: number, bucket: number) {
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("postForm").addEventListener("submit", (e) => onPost(e).catch((e) => banner(e.message, "error")));
 
-// Keep deferral countdowns and "publishable now" states honest without a reload.
+/**
+ * Two separate clocks, deliberately.
+ *
+ * The countdown ticks every second, but only rewrites the text of existing
+ * countdown elements — it does not re-render or hit the chain. A full refresh
+ * every second would spam the RPC and the gateway, and would also fight with
+ * whatever the user is doing.
+ *
+ * When a countdown reaches zero the volume becomes publishable, which IS a state
+ * change, so that single transition triggers one real refresh.
+ */
 setInterval(() => {
-  if (state.venue) render();
-}, 15_000);
+  const nodes = document.querySelectorAll<HTMLElement>("[data-countdown]");
+  if (nodes.length === 0) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  let anyElapsed = false;
+
+  nodes.forEach((node) => {
+    const until = Number(node.dataset.countdown);
+    const left = until - now;
+    if (left <= 0) {
+      anyElapsed = true;
+    } else {
+      node.textContent = `volume in ${mmss(left)}`;
+    }
+  });
+
+  // The deferral just elapsed — re-read so the publish button enables.
+  if (anyElapsed && state.venue) void refresh();
+}, 1_000);
+
+// Slower poll so another party's actions show up without a reload.
+setInterval(() => {
+  if (state.venue) void refresh();
+}, 20_000);
 
 if (!CONFIG.venue) {
   banner(
@@ -632,6 +808,12 @@ if (!CONFIG.venue) {
       "addresses are written to deployments/venue.*.json.",
     "info",
   );
+  render();
+} else {
+  // Load the public tape immediately. Prints are public by design, so they
+  // should not be gated behind a wallet connection.
+  render();
+  void connectReadOnly().catch(() => {
+    /* stays in the disconnected state; the Connect button still works */
+  });
 }
-
-render();

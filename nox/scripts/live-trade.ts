@@ -20,8 +20,8 @@
 import { network } from "hardhat";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createViemHandleClient, NotYetComputedHandleError, UnknownHandleError } from "@iexec-nox/handle";
-import { loadEnv, roleWalletClient } from "../lib/env.js";
+import { createViemHandleClient } from "@iexec-nox/handle";
+import { loadEnv, roleWalletClient, isTransient } from "../lib/env.js";
 import type { Hex } from "viem";
 
 const ASK_QTY = 1_000n;
@@ -112,18 +112,71 @@ async function main() {
     ? await createViemHandleClient(roleWalletClient("AUDITOR", chainId) as any)
     : null;
 
-  async function decrypt(hc: any, handle: string): Promise<bigint | null> {
+  /**
+   * The gateway answers "not a viewer" (HTTP 403) both when you genuinely lack a
+   * grant AND when the grant exists on-chain but its indexer has not caught up.
+   * Those are the same message for opposite situations, so ask the chain, which
+   * is authoritative: if NoxCompute says we are a viewer, a 403 is lag and worth
+   * retrying; if it says we are not, fail immediately rather than spin.
+   */
+  const NOX_ADDRESS = "0x24Ef36Ec5b626D7DCD09a98F3083c2758F0F77bF" as const;
+  const isViewerOnChain = (handle: string, who: string) =>
+    publicClient.readContract({
+      address: NOX_ADDRESS,
+      abi: [
+        {
+          name: "isViewer",
+          type: "function",
+          stateMutability: "view",
+          inputs: [{ type: "bytes32" }, { type: "address" }],
+          outputs: [{ type: "bool" }],
+        },
+      ],
+      functionName: "isViewer",
+      args: [handle as Hex, who as Hex],
+    }) as Promise<boolean>;
+
+  async function decrypt(hc: any, handle: string, who?: string): Promise<bigint | null> {
     const deadline = Date.now() + RESOLVE_TIMEOUT_MS;
+    let lastError = "";
     while (Date.now() < deadline) {
       try {
         const { value } = await hc.decrypt(handle);
         return BigInt(value);
       } catch (e: any) {
-        const pending =
-          e instanceof NotYetComputedHandleError ||
-          e instanceof UnknownHandleError ||
-          /not yet computed|unknown handle/i.test(e?.message ?? "");
-        if (!pending) return null;
+        lastError = e?.message ?? String(e);
+
+        let retryable = isTransient(e);
+
+        if (!retryable && /not a viewer|access_denied/i.test(lastError) && who) {
+          const granted = await isViewerOnChain(handle, who).catch(() => false);
+          if (granted) {
+            retryable = true; // grant exists on-chain; the indexer is behind
+          } else {
+            console.log(`    (no viewer grant on-chain for ${who} — a real denial)`);
+            return null;
+          }
+        }
+
+        if (!retryable) {
+          console.log(`    (non-transient: ${lastError})`);
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, 4_000));
+      }
+    }
+    console.log(`    (timed out; last error: ${lastError})`);
+    return null;
+  }
+
+  /** publicDecrypt has the same indexer lag, so poll it too. */
+  async function publicDecrypt(hc: any, handle: string): Promise<bigint | null> {
+    const deadline = Date.now() + RESOLVE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        const r = await hc.publicDecrypt(handle);
+        return BigInt(r.value);
+      } catch {
         await new Promise((r) => setTimeout(r, 4_000));
       }
     }
@@ -135,6 +188,21 @@ async function main() {
     void who;
     return { handle, proof: handleProof };
   };
+
+  // ---- opening balances -------------------------------------------------
+  // Escrow accumulates across runs, so every expectation below is a DELTA on
+  // what was already there. Absolute figures would pass once and then fail on
+  // every re-run, which would look like a contract bug and is not one.
+  console.log(`${stamp()} reading opening balances...`);
+  const openTakerCash =
+    (await decrypt(hcTaker, await venue.read.escrowCash([taker.account.address]), taker.account.address)) ?? 0n;
+  const openMakerCash =
+    (await decrypt(hcMaker, await venue.read.escrowCash([maker.account.address]), maker.account.address)) ?? 0n;
+  const openTakerShares =
+    (await decrypt(hcTaker, await venue.read.escrowShares([taker.account.address]), taker.account.address)) ?? 0n;
+  console.log(
+    `${stamp()}   taker cash ${openTakerCash}, maker cash ${openMakerCash}, taker shares ${openTakerShares}`,
+  );
 
   // ---- escrow -----------------------------------------------------------
   console.log(`${stamp()} funding escrow (both legs encrypted)...`);
@@ -177,47 +245,54 @@ async function main() {
   // ---- verify the arithmetic -------------------------------------------
   console.log(`\n${stamp()} decrypting results — the real test:`);
 
-  const fill = (await venue.read.fills([fillId])) as any[];
+  const fill = (await venue.read.fills([fillId])) as unknown as any[];
   const [, , fillQtyHandle] = fill;
 
-  const fillQty = await decrypt(hcMaker, fillQtyHandle);
+  const fillQty = await decrypt(hcMaker, fillQtyHandle, maker.account.address);
   check("fill quantity", fillQty, EXPECTED_FILL);
 
-  const order = (await venue.read.orders([orderId])) as any[];
-  const remaining = await decrypt(hcMaker, order[1]);
+  const order = (await venue.read.orders([orderId])) as unknown as any[];
+  const remaining = await decrypt(hcMaker, order[1], maker.account.address);
   check("order remaining", remaining, ASK_QTY - EXPECTED_FILL);
 
-  const takerCashAfter = await decrypt(hcTaker, await venue.read.escrowCash([taker.account.address]));
-  check("taker cash after", takerCashAfter, CASH_FUNDING - EXPECTED_NOTIONAL);
+  const takerCashAfter = await decrypt(
+    hcTaker,
+    await venue.read.escrowCash([taker.account.address]),
+    taker.account.address,
+  );
+  check("taker cash paid out", takerCashAfter, openTakerCash + CASH_FUNDING - EXPECTED_NOTIONAL);
 
-  const makerCashAfter = await decrypt(hcMaker, await venue.read.escrowCash([maker.account.address]));
-  check("maker cash after (notional)", makerCashAfter, EXPECTED_NOTIONAL);
+  const makerCashAfter = await decrypt(
+    hcMaker,
+    await venue.read.escrowCash([maker.account.address]),
+    maker.account.address,
+  );
+  check("maker cash received (notional)", makerCashAfter, openMakerCash + EXPECTED_NOTIONAL);
 
-  const takerShares = await decrypt(hcTaker, await venue.read.escrowShares([taker.account.address]));
-  check("taker shares received", takerShares, EXPECTED_FILL);
+  const takerShares = await decrypt(
+    hcTaker,
+    await venue.read.escrowShares([taker.account.address]),
+    taker.account.address,
+  );
+  check("taker shares received", takerShares, openTakerShares + EXPECTED_FILL);
 
   // ---- the disclosure regime -------------------------------------------
   console.log(`\n${stamp()} disclosure:`);
 
   if (hcAuditor) {
-    const auditorView = await decrypt(hcAuditor, fillQtyHandle);
+    const auditorView = await decrypt(hcAuditor, fillQtyHandle, auditor.account.address);
     check("auditor can read volume BEFORE the public", auditorView, EXPECTED_FILL);
   }
 
   await send("maker reportTrade", await venue.write.reportTrade([fillId], n(maker)));
 
   const priceHandle = fill[3];
-  const publicPrice = await hcMaker.publicDecrypt(priceHandle).catch(() => null);
-  if (publicPrice) {
-    check("published price (anyone can read)", BigInt(publicPrice.value as bigint), ASK_PRICE);
-  } else {
-    console.log(`  UNRESOLVED  published price`);
-    fail++;
-  }
+  const publicPrice = await publicDecrypt(hcMaker, priceHandle);
+  check("published price (anyone can read)", publicPrice, ASK_PRICE);
 
-  const volumeStillPrivate = await venue.read.fills([fillId]);
-  console.log(`  volumePublished = ${(volumeStillPrivate as any[])[7]} (must be false — deferred)`);
-  if ((volumeStillPrivate as any[])[7] === false) pass++;
+  const afterReport = (await venue.read.fills([fillId])) as unknown as any[];
+  console.log(`  volumePublished = ${afterReport[7]} (must be false — deferred)`);
+  if (afterReport[7] === false) pass++;
   else fail++;
 
   // ---- summary ----------------------------------------------------------

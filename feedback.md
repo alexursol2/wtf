@@ -212,10 +212,30 @@ permission state. We briefly believed our own `publishVolume` had failed, and on
 established otherwise by reading `isPubliclyDecryptable` from NoxCompute directly.
 
 **Suggestion:** raise a distinct, typed error for "public but not yet served" the
-way `NotYetComputedHandleError` already does for computation. The information is
-available — the indexer knows its own lag, and `SubgraphOutOfSyncError` exists in
-the codebase for a related case. Anything that lets a caller tell *wait* from
-*denied* would do.
+way `NotYetComputedHandleError` already does for computation. Anything that lets a
+caller tell *wait* from *denied* would do.
+
+**Related, and worth fixing first because it is trivial: `SubgraphOutOfSyncError`
+is thrown but not exported.** `index.ts` exports `NotYetComputedHandleError` and
+`UnknownHandleError` only, so this third transient error cannot be caught with
+`instanceof` and callers are forced to string-match on its message. It also fires
+on a lag of a *single block*:
+
+```
+Subgraph is out of sync. Current block: 11383289, Subgraph block: 11383288
+```
+
+We hit this in practice and it was genuinely misleading. Our verification script
+retried on the two exported error types and treated everything else as fatal, so
+a one-block lag reported five perfectly correct decrypted balances as unresolved,
+and we briefly believed a live trade had failed to settle. Direct `decrypt` calls
+moments later returned the right values.
+
+**Suggestions, in order of cheapness:** export `SubgraphOutOfSyncError`; give the
+three transient errors a shared base class or an `isTransient` property so
+callers can handle them as one category; and consider retrying internally on a
+lag of a block or two rather than surfacing it at all, since the SDK is better
+placed to know that a one-block lag is not a failure.
 
 ## 14. `createViemHandleClient` ignores the wallet client's bound account
 

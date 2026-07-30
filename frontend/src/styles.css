@@ -285,6 +285,73 @@ button.primary {
   border-radius: 8px;
 }
 
+/* ---------------- the tape ---------------- */
+
+.tape-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+.tape-grid label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+
+/* Numbers are the point of the tape, so they get real size. Tabular figures
+   stop the countdown from jittering as digits change width. */
+.tape-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.tape-value.pub {
+  color: var(--pub);
+}
+
+/* Withheld values must never look like a number. */
+.tape-value.private {
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.tape-value.pending {
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.tape-value.ready {
+  color: var(--ok);
+  font-size: 15px;
+}
+
+.tape-value.countdown {
+  color: var(--warn);
+}
+
+.tape-row {
+  align-items: flex-start;
+}
+
+.caption {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ---------------- pills ---------------- */
 
 .pill {

@@ -91,15 +91,16 @@ async function main() {
     console.log(`NoxCompute (local)      installed, gateway ${gateway.address}`);
   }
 
-  // Read the nonce AFTER the local bootstrap, which spends several itself.
-  // Public RPCs report stale nonces immediately after a send, which surfaces as
-  // "nonce too low" or "replacement transaction underpriced" on the following
-  // transaction, so track it locally and pass it explicitly from here on.
-  let nonce = await publicClient.getTransactionCount({
-    address: deployer.account.address,
-    blockTag: "pending",
-  });
-  const n = () => ({ nonce: nonce++ });
+  // No explicit nonce management here, deliberately. Every transaction on the
+  // live path is a `deployContract`, which WAITS for confirmation before
+  // returning, so the sends are inherently sequential and the node's nonce is
+  // never stale when the next one is built.
+  //
+  // Note that hardhat-viem's DeployContractConfig has no `nonce` field at all,
+  // so passing one is silently ignored — worth knowing before "adding a nonce"
+  // as a fix. The collisions we hit came from `contract.write.*`, which resolves
+  // on submission rather than inclusion; those call sites pass a tracked nonce
+  // (see scripts/live-trade.ts).
 
   // On a local chain, stand in for Layer 1 so the venue is deployable without
   // running the Hardhat-2 sub-project. On testnet, Layer 1 is mandatory.
@@ -107,8 +108,8 @@ async function main() {
     if (chainId !== 31337) {
       throw new Error("IDENTITY_REGISTRY is required on a live network — deploy T-REX first");
     }
-    const mockRegistry = await viem.deployContract("MockIdentityRegistry", [], n());
-    await mockRegistry.write.setVerified([deployer.account.address, true], n());
+    const mockRegistry = await viem.deployContract("MockIdentityRegistry", []);
+    await mockRegistry.write.setVerified([deployer.account.address, true]);
     identityRegistry = mockRegistry.address;
     console.log(`MockIdentityRegistry    ${identityRegistry}  (local only)`);
   }
@@ -117,7 +118,6 @@ async function main() {
     const mockBond = await viem.deployContract(
       "MockERC20",
       ["Acme 2030 Senior Note", "ACME30", 18],
-      n(),
     );
     bondToken = mockBond.address;
     console.log(`MockERC20 (bond)        ${bondToken}  (local only)`);
@@ -125,7 +125,7 @@ async function main() {
 
   // The cash leg is always a mock stablecoin — there is no real euro to point
   // at. The BOND, however, is the real ERC-3643 token on a live chain.
-  const cashToken = await viem.deployContract("MockERC20", ["Mock Euro", "mEUR", 6], n());
+  const cashToken = await viem.deployContract("MockERC20", ["Mock Euro", "mEUR", 6]);
   console.log(`MockERC20 (cash)        ${cashToken.address}`);
 
   // Layer 2 — one wrapper per leg, same contract. Both legs must be
@@ -133,14 +133,12 @@ async function main() {
   const sharesWrapper = await viem.deployContract(
     "ConfidentialWrapper",
     [bondToken, identityRegistry],
-    n(),
   );
   console.log(`ConfidentialWrapper/bond ${sharesWrapper.address}`);
 
   const cashWrapper = await viem.deployContract(
     "ConfidentialWrapper",
     [cashToken.address, identityRegistry],
-    n(),
   );
   console.log(`ConfidentialWrapper/cash ${cashWrapper.address}`);
 
@@ -148,7 +146,7 @@ async function main() {
   // Nox.toEuint256, which is NOT pure: it calls NoxCompute. So this deployment
   // genuinely exercises the Nox stack, and will fail fast if the off-chain
   // services are not serving this chain.
-  const venue = await viem.deployContract("DeferralVenue", [identityRegistry, auditor], n());
+  const venue = await viem.deployContract("DeferralVenue", [identityRegistry, auditor]);
   console.log(`DeferralVenue            ${venue.address}`);
 
   const out = {

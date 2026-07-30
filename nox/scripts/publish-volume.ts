@@ -27,7 +27,7 @@ async function main() {
   if (d.chainId !== chainId) throw new Error(`record is chain ${d.chainId}, connected to ${chainId}`);
 
   const venue = await viem.getContractAt("DeferralVenue", d.venue);
-  const f = (await venue.read.fills([fillId])) as any[];
+  const f = (await venue.read.fills([fillId])) as unknown as any[];
   const [fMaker, , qtyHandle, priceHandle, bucket, deferredUntil, reported, volumePublished] = f;
 
   const now = BigInt((await publicClient.getBlock()).timestamp);

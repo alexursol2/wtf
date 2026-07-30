@@ -73,7 +73,7 @@ async function main() {
   await venue.write.postAsk([q.handle, p.handle, q.proof, p.proof, BigInt(now) + 3600n], {
     account: maker.account,
   });
-  const order = (await venue.read.orders([0n])) as any[];
+  const order = (await venue.read.orders([0n])) as unknown as any[];
   line(`  2. ask posted. quantity and price are ciphertext handles.`);
   line(`     order price:            ${yesno(await isPublic(order[2]))}`);
 
@@ -83,7 +83,7 @@ async function main() {
   await venue.write.fill([0n, bid.handle, want.handle, bid.proof, want.proof, 1], {
     account: taker.account,
   });
-  const fill = (await venue.read.fills([0n])) as any[];
+  const fill = (await venue.read.fills([0n])) as unknown as any[];
   line("  3. filled, branchlessly. Nobody — not the operator, not iExec, not the");
   line("     TEE Runner — learns whether the order crossed. Settlement is a");
   line("     chain of selects on an unreadable ebool.");
@@ -92,12 +92,12 @@ async function main() {
 
   // ---- report ----
   await venue.write.reportTrade([0n], { account: maker.account });
-  const afterReport = (await venue.read.fills([0n])) as any[];
+  const afterReport = (await venue.read.fills([0n])) as unknown as any[];
   line("  4. the MAKER reports the trade — the reporting entity does it, as in");
   line("     the real regime. Price prints. Volume does not.");
   line(`     fill price:             ${yesno(await isPublic(afterReport[3]))}`);
   line(`     fill volume:            ${yesno(await isPublic(afterReport[2]))}`);
-  line(`     resting order price:    ${yesno(await isPublic(((await venue.read.orders([0n])) as any[])[2]))}  <- snapshot kept the live handle private`);
+  line(`     resting order price:    ${yesno(await isPublic(((await venue.read.orders([0n])) as unknown as any[])[2]))}  <- snapshot kept the live handle private`);
 
   // ---- deferral ----
   const deferral = await venue.read.LIS_DEFERRAL();
@@ -112,7 +112,7 @@ async function main() {
 
   await networkHelpers.time.increase(Number(deferral) + 1);
   await venue.write.publishVolume([0n], { account: maker.account });
-  const final = (await venue.read.fills([0n])) as any[];
+  const final = (await venue.read.fills([0n])) as unknown as any[];
   line("  6. deferral elapsed. Volume prints.");
   line(`     fill volume:            ${yesno(await isPublic(final[2]))}`);
   line("");
