@@ -13,7 +13,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "viem";
+import { createWalletClient, http, type Hex, type WalletClient } from "viem";
+import { sepolia, arbitrumSepolia, hardhat } from "viem/chains";
 
 let loaded = false;
 
@@ -94,4 +95,42 @@ export function auditorAddress(): string | undefined {
   if (explicit) return explicit;
   const key = normalizeKey(process.env.PRIVATE_KEY_AUDITOR);
   return key ? privateKeyToAccount(key).address : undefined;
+}
+
+/**
+ * A viem WalletClient holding EXACTLY ONE account, for use with
+ * `@iexec-nox/handle`.
+ *
+ * This is not a convenience — it is required for correctness. The SDK's
+ * ViemBlockchainService resolves the signer via `walletClient.getAddresses()[0]`
+ * and ignores `walletClient.account`. A Hardhat wallet client shares one
+ * transport whose `eth_accounts` lists every configured key, so EVERY party's
+ * client reports the first account (the deployer). The gateway then binds the
+ * input proof to the wrong owner, and the venue reverts at validateInputProof
+ * with an opaque `0xae385f38` (InvalidProof / owner mismatch).
+ *
+ * Building a dedicated client per role makes `getAddresses()` return that role's
+ * address and nothing else.
+ */
+export function roleWalletClient(role: Role, chainId: number): WalletClient {
+  loadEnv();
+
+  const key = normalizeKey(process.env[`PRIVATE_KEY_${role}`]);
+  if (!key) throw new Error(`PRIVATE_KEY_${role} is not set in .env`);
+
+  const rpcUrl =
+    chainId === 421614
+      ? (process.env.ARB_RPC_URL ?? "https://arbitrum-sepolia-rpc.publicnode.com")
+      : chainId === 11155111
+        ? (process.env.RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com")
+        : "http://127.0.0.1:8545";
+
+  const chain =
+    chainId === 421614 ? arbitrumSepolia : chainId === 11155111 ? sepolia : hardhat;
+
+  return createWalletClient({
+    account: privateKeyToAccount(key),
+    chain,
+    transport: http(rpcUrl),
+  });
 }

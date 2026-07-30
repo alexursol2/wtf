@@ -21,5 +21,17 @@
     "issuer": "0xe84A751081cA21175A449b122091f693B86445af",
     "maker": "0xEAA3A51856575e14be940366A67A762b5E5f5e14",
     "taker": "0x60ea86087d7A326fBCD5AE374Fe7bAf3Ca66Ae72"
+  },
+  "registeredHolders": {
+    "0xa1ebf88faa39a0aad406376bdb2b47ad3e4aac9e": {
+      "identity": "0x53E4F1c1009ADBea360395A9c99b1BaAddA36064",
+      "country": 250,
+      "verified": true
+    },
+    "0xc35a6a83acc7375d3f33ca222fdff24486e67692": {
+      "identity": "0xeD51111c3b672cD40beE0EfdE281d66F8742602d",
+      "country": 250,
+      "verified": true
+    }
   }
 }

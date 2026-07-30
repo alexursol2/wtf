@@ -199,6 +199,60 @@ the same pattern against the public endpoint did not.
 starter template should track nonces locally. A half-completed deploy is an
 expensive way to learn this.
 
+## 15. `publicDecrypt` trails the chain, and reads as a failure when it does
+
+After `allowPublicDecryption` is mined, the on-chain ACL is public immediately —
+`isPubliclyDecryptable` returns true in the same block. But `publicDecrypt` goes
+through the gateway, which reads the ACL via an indexer that trails the head, so
+for a few seconds it still refuses the value.
+
+The refusal is indistinguishable from "this handle is not public", which is the
+same conflation as point 6 in a different guise: a timing state presenting as a
+permission state. We briefly believed our own `publishVolume` had failed, and only
+established otherwise by reading `isPubliclyDecryptable` from NoxCompute directly.
+
+**Suggestion:** raise a distinct, typed error for "public but not yet served" the
+way `NotYetComputedHandleError` already does for computation. The information is
+available — the indexer knows its own lag, and `SubgraphOutOfSyncError` exists in
+the codebase for a related case. Anything that lets a caller tell *wait* from
+*denied* would do.
+
+## 14. `createViemHandleClient` ignores the wallet client's bound account
+
+The highest-severity issue we hit in the JS SDK, and the one most likely to bite
+anyone testing with more than one party.
+
+`ViemBlockchainService` resolves the signer as:
+
+```js
+const addresses = await this.walletClient.getAddresses();
+const address = addresses[0];
+```
+
+It reads `getAddresses()[0]` and **ignores `walletClient.account`** — even though
+the very next method uses `this.walletClient.account` for signing. With a Hardhat
+wallet client that is a silent correctness bug: all configured keys share one
+transport, `eth_accounts` returns every one of them, and so *every* party's
+client reports the first account. We handed `encryptInput` a client for the taker
+and got a proof bound to the deployer.
+
+The failure is far from the cause. The gateway happily signs the proof, and the
+transaction reverts on-chain inside `validateInputProof` with a bare
+**`0xae385f38`** — a custom error with no string, no ABI entry in the application
+contract, and no indication that the owner was wrong. We only found it by
+decoding the raw 137-byte proof by hand and noticing the first 20 bytes were the
+wrong address.
+
+Workaround: build a dedicated `createWalletClient({ account, chain, transport })`
+per party so `getAddresses()` returns exactly one address.
+
+**Suggestion:** prefer `walletClient.account?.address` and fall back to
+`getAddresses()[0]`, which is a two-line change and matches what the signing path
+already does. Failing that, throw when `getAddresses()` returns more than one
+account. And please give `InvalidProof` a reason string that distinguishes owner
+mismatch from app mismatch from expiry — the on-chain `require`s already carry
+those strings internally, but the custom error discards them.
+
 ---
 
 ## Live-stack notes (Ethereum Sepolia, 30 July 2026)
