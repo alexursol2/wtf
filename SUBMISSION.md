@@ -82,13 +82,14 @@ Every one of these is checkable by a judge from a clean clone:
 | Register sealed until disclosed | `scripts/register-demo.ts` |
 | Country rule enforced on the encrypted path | `scripts/compliance-demo.ts` — reverts with `"country"` |
 | Attestation scoped honestly | `scripts/attestation-check.ts` |
+| Source is readable, not just bytecode | verified on sepolia.etherscan.io |
 
 ## Deliverables checklist
 
 - [x] Public repo that clones and runs
 - [x] README: install, deploy, architecture, leak model, limitations, `PRICE_SCALE`
 - [x] Built-during-hackathon statement (see Provenance)
-- [x] Working frontend, no mock data
+- [x] Working frontend, no mock data — reads verified; **write path needs one manual MetaMask test**
 - [x] Deployed on chain
 - [x] `feedback.md` on iExec tooling
 - [ ] Demo video, 4 min max — **teammate**

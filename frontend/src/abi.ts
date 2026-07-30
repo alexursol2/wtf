@@ -54,6 +54,8 @@ export const NOX_ABI = [
 ] as const;
 
 export const WRAPPER_ABI = [
+  "function underlying() view returns (address)",
+  "function grantRegisterAccess(address holder, address viewer) external",
   "function wrap(uint256 amount) external",
   "function requestUnwrap(uint256 amount) external returns (uint256)",
   "function claimUnwrap(uint256 requestId, bytes okProof) external",

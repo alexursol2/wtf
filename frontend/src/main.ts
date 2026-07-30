@@ -17,14 +17,23 @@
  *    placeholder. A published price is genuinely public and could be decrypted
  *    by anyone; an unpublished one is shown as private, not as zero.
  */
-import { BrowserProvider, Contract, JsonRpcSigner, JsonRpcProvider, Wallet, ZeroHash } from "ethers";
+import {
+  BrowserProvider,
+  Contract,
+  JsonRpcSigner,
+  JsonRpcProvider,
+  Wallet,
+  ZeroHash,
+  parseUnits,
+  formatUnits,
+} from "ethers";
 import {
   createEthersHandleClient,
   NotYetComputedHandleError,
   UnknownHandleError,
   type HandleClient,
 } from "@iexec-nox/handle";
-import { VENUE_ABI, NOX_ABI, WRAPPER_ABI } from "./abi.js";
+import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -445,6 +454,7 @@ async function refresh() {
   fills = nextFills;
 
   await refreshOwnPosition();
+  await refreshWrapper();
   render();
 }
 
@@ -939,6 +949,121 @@ function renderTape() {
 // actions needing encrypted input
 // ---------------------------------------------------------------------------
 
+/**
+ * Funds the venue's encrypted escrow.
+ *
+ * This has to exist for the venue to be usable at all: escrow lives in the venue
+ * as raw handles, and posting an ask without shares behind it produces an order
+ * that settles for zero rather than one that fails loudly — because reverting on
+ * an encrypted shortfall would leak it.
+ */
+async function onDeposit(e: Event) {
+  e.preventDefault();
+  if (!state.venue || !state.signer) {
+    banner("Connect a wallet first.", "error");
+    return;
+  }
+
+  const amount = BigInt(($("depositAmount") as HTMLInputElement).value || "0");
+  const leg = ($("depositLeg") as HTMLSelectElement).value as "cash" | "shares";
+  if (amount <= 0n) {
+    banner("Deposit amount must be positive.", "error");
+    return;
+  }
+
+  await submit(`Deposit ${leg}`, async () => {
+    const enc = await encryptInput(amount);
+    return leg === "cash"
+      ? state.venue!.depositCash(enc.handle, enc.proof)
+      : state.venue!.depositShares(enc.handle, enc.proof);
+  });
+}
+
+/**
+ * Wraps plaintext T-REX bonds into a confidential balance — the Layer 2 custody
+ * boundary. Two transactions: approve, then wrap. The amount is public here by
+ * construction; see the note in the UI.
+ */
+async function onWrap(e: Event) {
+  e.preventDefault();
+  if (!state.signer) {
+    banner("Connect a wallet first.", "error");
+    return;
+  }
+  if (!CONFIG.sharesWrapper) {
+    banner("VITE_SHARES_WRAPPER is not configured.", "error");
+    return;
+  }
+
+  const raw = ($("wrapAmount") as HTMLInputElement).value;
+  if (!raw || Number(raw) <= 0) {
+    banner("Wrap amount must be positive.", "error");
+    return;
+  }
+
+  await submit("Wrap bonds", async () => {
+    const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, state.signer!);
+    const bond = new Contract(await wrapper.underlying(), ERC20_ABI, state.signer!);
+    const decimals: bigint = await bond.decimals();
+    const amount = parseUnits(raw, Number(decimals));
+
+    // Approve first and wait for it — wrap() pulls via transferFrom, so an
+    // un-mined approval makes the wrap revert on allowance.
+    const approval = await bond.approve(CONFIG.sharesWrapper, amount);
+    await approval.wait();
+
+    return wrapper.wrap(amount);
+  });
+}
+
+/** Public ERC-20 balance and the confidential balance beside it. */
+async function refreshWrapper() {
+  if (!CONFIG.sharesWrapper || !state.account || !state.nox) return;
+
+  try {
+    const provider = state.signer ?? readOnlyProvider();
+    const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
+    const bond = new Contract(await wrapper.underlying(), ERC20_ABI, provider as any);
+
+    const [decimals, bal] = await Promise.all([
+      bond.decimals() as Promise<bigint>,
+      bond.balanceOf(state.account) as Promise<bigint>,
+    ]);
+    $("bondBalance").textContent = `${formatUnits(bal, Number(decimals))}`;
+
+    const handle: string = await wrapper.balanceHandle(state.account);
+    if (!handle || handle === ZeroHash) {
+      $("wrappedHandle").textContent = "—";
+      $("wrappedState").textContent = "nothing wrapped yet";
+      $("wrappedState").className = "pill muted";
+      return;
+    }
+
+    const canView = await state.nox.isViewer(handle, state.account);
+    if (!canView) {
+      $("wrappedHandle").textContent = short(handle);
+      $("wrappedState").textContent = "no viewer grant";
+      $("wrappedState").className = "pill warn";
+      return;
+    }
+
+    const value = await tryDecrypt(handle);
+    if (value === null) {
+      $("wrappedHandle").textContent = short(handle);
+      $("wrappedState").textContent = "resolving…";
+      $("wrappedState").className = "pill warn";
+    } else {
+      $("wrappedHandle").textContent = formatUnits(value, Number(decimals));
+      $("wrappedState").textContent = "decrypted (only you can)";
+      $("wrappedState").className = "pill ok";
+    }
+  } catch {
+    $("bondBalance").textContent = "—";
+    $("wrappedState").textContent = "read failed";
+    $("wrappedState").className = "pill warn";
+  }
+}
+
 async function onPost(e: Event) {
   e.preventDefault();
   if (!state.venue) {
@@ -984,6 +1109,9 @@ async function onFill(orderId: number, bucket: number) {
 
 $("tabMarket").addEventListener("click", () => setView("market"));
 $("tabAuditor").addEventListener("click", () => setView("auditor"));
+
+$("depositForm").addEventListener("submit", (e) => onDeposit(e).catch((e) => banner(e.message, "error")));
+$("wrapForm").addEventListener("submit", (e) => onWrap(e).catch((e) => banner(e.message, "error")));
 
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("postForm").addEventListener("submit", (e) => onPost(e).catch((e) => banner(e.message, "error")));

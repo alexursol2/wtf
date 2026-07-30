@@ -270,6 +270,8 @@ VITE_VENUE=0x… VITE_CHAIN_ID=11155111 npm run dev
 
 **The tape loads without a wallet.** Published prices and volumes are public by design, so a regulator or a passer-by can read the prints without connecting anything. A wallet is only needed to trade or to decrypt your own balances.
 
+Connected, the UI covers the whole path: **wrap** bonds through the Layer 2 custody boundary, **deposit** either leg into the venue's encrypted escrow, then post, fill, cancel, report and publish. Funding first matters — the venue holds escrow as raw handles, and an ask posted without shares behind it settles for **zero rather than failing**, because reverting on an encrypted shortfall would leak it.
+
 The tape shows each print in one of four states, driven entirely by chain state: *unreported* → *price published, volume counting down* → *publishable now* → *fully printed*. Notional is deliberately withheld until both halves are public, because that gap is what the deferral actually creates.
 
 ---
@@ -312,6 +314,7 @@ Live on Ethereum Sepolia, no mocks in any demo path. See `deployments/*.sepolia.
 | Holder register, grant on demand | done (`scripts/register-demo.ts`) |
 | Auditor route | done — regulator-vs-public side by side, unreported fills, register |
 | Compliance rejection on the encrypted path | done (`scripts/compliance-demo.ts`) |
+| Contracts verified on Etherscan | done — source readable for venue + both wrappers |
 | Chain of Trust | investigated — build provenance verifiable, per-fill attestation designed-not-shipped |
 
 The auditor route shows the disclosure gap directly: for each fill, what the

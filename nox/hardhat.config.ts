@@ -16,6 +16,15 @@ const accounts = accountsArray();
 
 const config: HardhatUserConfig = {
   plugins: [hardhatToolboxViem],
+
+  // Verified source is load-bearing for this project specifically: the whole
+  // claim is auditable disclosure, and an unverified contract asks a reader to
+  // take the disclosure logic on trust. `npm run verify:sepolia`.
+  verify: {
+    etherscan: {
+      apiKey: process.env.ETHERSCAN_API_KEY ?? "",
+    },
+  },
   solidity: {
     version: "0.8.35",
     settings: {

@@ -285,6 +285,44 @@ button.primary {
   border-radius: 8px;
 }
 
+/* ---------------- subsections ---------------- */
+
+.subsection {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.subsection h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.hint.left {
+  text-align: left;
+  display: block;
+  margin-bottom: 10px;
+}
+
+select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13px;
+  width: 100%;
+}
+
+select:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
 /* ---------------- tabs ---------------- */
 
 .tabs {

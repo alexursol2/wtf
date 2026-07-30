@@ -51,6 +51,62 @@
           Balances decrypt off-chain against your viewer grant, via the Nox handle SDK and
           gateway. This UI reports the real on-chain grant state; it never invents a number.
         </p>
+
+        <div class="subsection">
+          <h3>Fund escrow</h3>
+          <p class="hint left">
+            An order is only as good as the escrow behind it. The venue holds encrypted balances
+            directly, so deposit before posting &mdash; an unfunded ask settles for zero rather
+            than failing, because a revert would leak the shortfall.
+          </p>
+          <form id="depositForm" class="form">
+            <div class="field">
+              <label for="depositAmount">Amount</label>
+              <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
+            </div>
+            <div class="field">
+              <label for="depositLeg">Leg</label>
+              <select id="depositLeg">
+                <option value="cash">Cash (to fill)</option>
+                <option value="shares">Shares (to post)</option>
+              </select>
+            </div>
+            <button type="submit" class="primary">Deposit</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ---------------- layer 2 ---------------- -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Confidential wrapper <span class="muted">&middot; layer 2</span></h2>
+          <span class="hint">the custody boundary: plaintext bonds in, encrypted balance out</span>
+        </div>
+        <div class="grid2">
+          <div class="stat">
+            <label>Unwrapped ACME30 (public ERC-3643)</label>
+            <code id="bondBalance" class="handle">—</code>
+            <span class="pill muted">visible to everyone</span>
+          </div>
+          <div class="stat">
+            <label>Wrapped balance (confidential)</label>
+            <code id="wrappedHandle" class="handle">—</code>
+            <span id="wrappedState" class="pill muted">no handle yet</span>
+          </div>
+        </div>
+        <form id="wrapForm" class="form">
+          <div class="field">
+            <label for="wrapAmount">Amount to wrap</label>
+            <input id="wrapAmount" type="number" min="1" step="any" placeholder="2500" />
+          </div>
+          <button type="submit" class="primary">Approve &amp; wrap</button>
+        </form>
+        <p class="note">
+          <strong>Wrap and unwrap amounts are public</strong> &mdash; they ride a plaintext ERC-20
+          transfer. Confidentiality applies to balances and transfers <em>between</em> wrapped
+          holders, not to the custody boundary itself. That is true of every ERC-7984 wrapper and
+          is stated in the leak model rather than glossed.
+        </p>
       </section>
 
       <!-- ---------------- post ---------------- -->
