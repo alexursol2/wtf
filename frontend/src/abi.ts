@@ -25,6 +25,13 @@ export const VENUE_ABI = [
   "function reportTrade(uint256 fillId) external",
   "function publishVolume(uint256 fillId) external",
 
+  // enumeration — counts, not logs. Hosted RPCs cap eth_getLogs at a narrow
+  // block range (10 blocks on Alchemy's free tier), so scanning from block 0
+  // is not an option, and the Nox subgraph indexes handles rather than these
+  // events.
+  "function ordersCount() view returns (uint256)",
+  "function fillsCount() view returns (uint256)",
+
   // state
   "function orders(uint256) view returns (address maker, bytes32 qtyRemaining, bytes32 price, uint64 expiry, uint8 state)",
   "function fills(uint256) view returns (address maker, address taker, bytes32 qty, bytes32 price, uint8 bucket, uint64 volumeDeferredUntil, bool reported, bool volumePublished)",

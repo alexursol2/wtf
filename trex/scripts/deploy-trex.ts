@@ -30,15 +30,31 @@ const WITH_CLAIMS = process.env.WITH_CLAIMS === "true";
 
 async function main() {
   const signers = await ethers.getSigners();
+
+  // Signer order comes from env.ts: DEPLOYER, MAKER, TAKER, AUDITOR.
   const deployer = signers[0];
-  // On a live testnet there is usually only one funded key. Fall back to the
-  // deployer so the script works both locally and on Sepolia.
-  const issuer = signers[1] ?? deployer;
-  const maker = signers[2] ?? deployer;
-  const taker = signers[3] ?? deployer;
+  const maker = signers[1] ?? deployer;
+  const taker = signers[2] ?? deployer;
+  // The deployer doubles as the claim issuer — one less funded key to manage.
+  const issuer = deployer;
+
+  // On a local chain Hardhat supplies 20 signers, so roles are always distinct.
+  // On a live network they come from .env, and a collision is fatal rather than
+  // cosmetic: DeferralVenue.fill rejects a self-fill outright, because with
+  // maker == taker both sides of the cash transfer hit one storage slot.
+  if (network.name !== "hardhat" && network.name !== "localhost") {
+    if (maker.address === taker.address) {
+      throw new Error(
+        "maker and taker resolve to the same address — set PRIVATE_KEY_MAKER and " +
+          "PRIVATE_KEY_TAKER to different keys. A self-fill cannot settle.",
+      );
+    }
+  }
 
   console.log(`network:  ${network.name}`);
   console.log(`deployer: ${deployer.address}`);
+  console.log(`maker:    ${maker.address}`);
+  console.log(`taker:    ${taker.address}`);
 
   // ---------------------------------------------------------------
   // Registries

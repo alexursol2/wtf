@@ -1,9 +1,14 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
+import { loadEnv, accountsArray } from "./env";
+
+// .env lives at the repo root so a single file serves both Hardhat projects.
+loadEnv();
 
 const RPC_URL = process.env.RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com";
-const PRIVATE_KEY = process.env.PRIVATE_KEY ?? "";
-const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
+
+// Signer order: DEPLOYER, MAKER, TAKER, AUDITOR. deploy-trex.ts indexes on it.
+const accounts = accountsArray();
 
 /**
  * T-REX sub-project. Hardhat 2 / solc 0.8.17 — this CANNOT share a project with

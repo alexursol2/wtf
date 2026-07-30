@@ -184,6 +184,18 @@ Addresses land in `deployments/trex.<network>.json`.
 cd ../nox && npm install && npx hardhat compile
 ```
 
+Check your accounts and the off-chain stack before spending gas:
+
+```bash
+npx hardhat run scripts/check-accounts.ts --network sepolia
+```
+
+That reports balances per role, whether NoxCompute is deployed on the target
+chain, and whether the gateway and subgraph respond. Only the deployer and taker
+need ETH; **the auditor needs none** — it sends no transactions, because
+decryption is an off-chain signed request. Top the others up from the deployer
+with `scripts/fund-accounts.ts`.
+
 `viaIR` is on. `fill()` does not compile without it — stack too deep. Compilation is noticeably slower; this is expected.
 
 ```bash
@@ -194,10 +206,22 @@ npm run demo      # one full trade, narrated
 Deploy against a live Layer 1:
 
 ```bash
-IDENTITY_REGISTRY=0x… BOND_TOKEN=0x… AUDITOR=0x… npx hardhat run scripts/deploy.ts --network sepolia
+IDENTITY_REGISTRY=0x… BOND_TOKEN=0x… npx hardhat run scripts/deploy.ts --network sepolia
 ```
 
-The deploy script refuses any chain without a NoxCompute deployment rather than failing later at the first encrypted operation.
+The deploy script refuses any chain without a NoxCompute deployment rather than failing later at the first encrypted operation. `AUDITOR` is optional — it defaults to the address derived from `PRIVATE_KEY_AUDITOR`.
+
+### Feeding the wrappers back into Layer 1
+
+There is an unavoidable ordering loop. Each wrapper takes **custody** of the T-REX token, so it must be a verified holder of record — but a wrapper's address does not exist until Layer 2 is deployed, which happens after Layer 1. So register them afterwards, once per wrapper:
+
+```bash
+HOLDER=0x<wrapper> COUNTRY=250 npx hardhat run scripts/register-holder.ts --network sepolia
+```
+
+Registering a *contract* as a holder is routine, not a trick: `isVerified` checks for a registered identity plus claims and does not distinguish an EOA from a contract.
+
+Full order: T-REX deploy → note `IDENTITY_REGISTRY` and `BOND_TOKEN` → Nox deploy → register both wrappers → first trade.
 
 ### Frontend
 

@@ -1,0 +1,25 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployedAt": "2026-07-30T14:53:47.408Z",
+  "withClaims": false,
+  "token": "0xb0ba5244DF094160Ff31E523Fa5F8a51124f94E7",
+  "identityRegistry": "0x9eF9D65E08Acc1fc91bF2815409Ac6782e20eF66",
+  "identityRegistryStorage": "0x54205e9e9a90ded3c7bd7E8f60EfEC632b420592",
+  "claimTopicsRegistry": "0xEa8487ebeD1c4d349ec4f18Dd6c5316c45c132e6",
+  "trustedIssuersRegistry": "0x1198044f9B05c5192d2a81F5f5E6f5D8C1243F5F",
+  "modularCompliance": "0xCa27d157b50d1544B0669F3f187e67028B9194cf",
+  "countryRestrictModule": "0xEcbC1314fF77ce8Eac7cb7a4c47886c2E35A5D8e",
+  "supplyLimitModule": "0xbe39d0eFB93b96c22961F24acb6A78B93283e99f",
+  "claimIssuer": "0x0000000000000000000000000000000000000000",
+  "identities": {
+    "maker": "0xBd0490b95bB0bB08c209d7a34Cff229C4F309B05",
+    "taker": "0xab58Be6F7C239FD8959B3CC859C3fbB02D580272"
+  },
+  "accounts": {
+    "deployer": "0xe84A751081cA21175A449b122091f693B86445af",
+    "issuer": "0xe84A751081cA21175A449b122091f693B86445af",
+    "maker": "0xEAA3A51856575e14be940366A67A762b5E5f5e14",
+    "taker": "0x60ea86087d7A326fBCD5AE374Fe7bAf3Ca66Ae72"
+  }
+}

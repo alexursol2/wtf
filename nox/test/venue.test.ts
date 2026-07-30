@@ -15,6 +15,7 @@
 import { describe, it, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import type { Hex } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   connect,
   bootstrapNoxCompute,
@@ -213,6 +214,23 @@ describe("DeferralVenue", () => {
     );
   });
 
+  it("rejects a self-fill, which would otherwise credit the filler", async () => {
+    await depositBoth();
+    const orderId = await postAsk();
+
+    // Without the guard this is a live balance bug, not just a wash trade:
+    // escrowCash[msg.sender] and escrowCash[o.maker] resolve to the same handle
+    // and the same storage slot, so the debit is overwritten by the credit.
+    const bid = await encInput(ctx.maker.account.address, venue.address);
+    const wantQty = await encInput(ctx.maker.account.address, venue.address);
+    await assert.rejects(
+      venue.write.fill([orderId, bid.handle, wantQty.handle, bid.proof, wantQty.proof, 0], {
+        account: ctx.maker.account,
+      }),
+      /self fill/,
+    );
+  });
+
   it("blocks a cancel racing an unresolved fill", async () => {
     await depositBoth();
     const orderId = await postAsk();
@@ -294,6 +312,78 @@ describe("DeferralVenue", () => {
 
     await venue.write.publishVolume([0n], { account: ctx.maker.account });
     await assert.rejects(venue.write.publishVolume([0n], { account: ctx.maker.account }), /published/);
+  });
+
+  // ---------------- who can see what ----------------
+
+  it("gives the auditor the volume while the public still cannot see it", async () => {
+    // The core Task 3 claim, and the reason the auditor grant happens at fill
+    // rather than at reportTrade: the regulator is ahead of the public.
+    // An ephemeral random address stands in for "the public" — a fresh key each
+    // run cannot have been accidentally granted anything.
+    const outsider = privateKeyToAccount(generatePrivateKey());
+
+    await depositBoth();
+    const orderId = await postAsk();
+    await fill(orderId, 1); // LargeInScale, so volume is deferred
+
+    const [, , fqty] = (await venue.read.fills([0n])) as any[];
+
+    assert.equal(
+      await noxRead("isViewer", [fqty, ctx.auditor.account.address]),
+      true,
+      "auditor cannot see the volume",
+    );
+    assert.equal(
+      await noxRead("isViewer", [fqty, outsider.address]),
+      false,
+      "an unrelated address can see the volume",
+    );
+    assert.equal(await noxRead("isPubliclyDecryptable", [fqty]), false, "volume is already public");
+  });
+
+  it("closes the gap only once the volume is published", async () => {
+    const outsider = privateKeyToAccount(generatePrivateKey());
+
+    await depositBoth();
+    const orderId = await postAsk();
+    await fill(orderId, 0); // Standard — publishable immediately
+    await venue.write.reportTrade([0n], { account: ctx.maker.account });
+
+    const [, , fqty] = (await venue.read.fills([0n])) as any[];
+
+    // Before publication the outsider is shut out...
+    assert.equal(await noxRead("isViewer", [fqty, outsider.address]), false);
+
+    await venue.write.publishVolume([0n], { account: ctx.maker.account });
+
+    // ...and afterwards everyone can read it. This is the positive control:
+    // it proves the check above is measuring access, not a broken read.
+    assert.equal(await noxRead("isPubliclyDecryptable", [fqty]), true);
+    assert.equal(
+      await noxRead("isViewer", [fqty, outsider.address]),
+      true,
+      "publication did not actually make the volume readable",
+    );
+  });
+
+  it("keeps a counterparty out of the other side's escrow balance", async () => {
+    await depositBoth();
+
+    const makerCash = await venue.read.escrowCash([ctx.maker.account.address]);
+    const takerCash = await venue.read.escrowCash([ctx.taker.account.address]);
+
+    assert.equal(await noxRead("isViewer", [makerCash, ctx.maker.account.address]), true);
+    assert.equal(
+      await noxRead("isViewer", [makerCash, ctx.taker.account.address]),
+      false,
+      "the taker can read the maker's cash balance",
+    );
+    assert.equal(
+      await noxRead("isViewer", [takerCash, ctx.maker.account.address]),
+      false,
+      "the maker can read the taker's cash balance",
+    );
   });
 
   // ---------------- lifecycle ----------------

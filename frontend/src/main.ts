@@ -17,7 +17,13 @@
  *    placeholder. A published price is genuinely public and could be decrypted
  *    by anyone; an unpublished one is shown as private, not as zero.
  */
-import { BrowserProvider, Contract, JsonRpcSigner, ZeroHash, type Log } from "ethers";
+import { BrowserProvider, Contract, JsonRpcSigner, ZeroHash } from "ethers";
+import {
+  createEthersHandleClient,
+  NotYetComputedHandleError,
+  UnknownHandleError,
+  type HandleClient,
+} from "@iexec-nox/handle";
 import { VENUE_ABI, NOX_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
 
@@ -60,6 +66,7 @@ const state = {
   chainId: 0,
   venue: null as Contract | null,
   nox: null as Contract | null,
+  handleClient: null as HandleClient | null,
   priceScale: 10000n,
   lisDeferral: 90n,
   auditor: "",
@@ -101,26 +108,57 @@ async function submit(label: string, fn: () => Promise<any>) {
 // ---------------------------------------------------------------------------
 
 /**
- * Encrypted inputs require a handle from the Nox gateway plus a 137-byte
- * EIP-712 proof binding (handle, owner, app). The browser cannot mint those on
- * its own — that is the gateway's job, reached through the Nox handle SDK.
+ * Encrypted inputs need a handle minted by the Nox gateway plus a 137-byte
+ * EIP-712 proof binding (handle, owner, app). Only the gateway can produce
+ * those, so this cannot be stubbed — the venue calls validateInputProof and an
+ * unproven handle reverts on-chain.
  *
- * Rather than fake a handle (which would revert on-chain at validateInputProof
- * anyway, and would be mock data), this throws a clear, honest error until the
- * SDK is wired in. Set VITE_NOX_GATEWAY_URL and implement the call here.
+ * The SDK ships built-in configuration for Ethereum Sepolia and Arbitrum
+ * Sepolia (gateway, NoxCompute address, subgraph), so no URL is required on
+ * those chains; VITE_NOX_GATEWAY_URL only overrides it.
+ *
+ * The `app` binding is the CONTRACT that will call fromExternal, not the user.
+ * Passing the wallet address instead reverts with "App mismatch".
  */
-async function encryptInput(_value: bigint): Promise<{ handle: string; proof: string }> {
+async function getHandleClient(): Promise<HandleClient> {
+  if (!state.signer) throw new Error("connect a wallet first");
+  if (state.handleClient) return state.handleClient;
+
+  const override: Record<string, string> = {};
   const gatewayUrl = (import.meta.env as any).VITE_NOX_GATEWAY_URL;
-  if (!gatewayUrl) {
-    throw new Error(
-      "no Nox gateway configured — set VITE_NOX_GATEWAY_URL to encrypt inputs. " +
-        "The venue rejects unproven handles, so this cannot be stubbed.",
-    );
-  }
-  throw new Error(
-    "gateway encryption not implemented in this build — use the Nox handle SDK against " +
-      gatewayUrl,
+  const subgraphUrl = (import.meta.env as any).VITE_NOX_SUBGRAPH_URL;
+  if (gatewayUrl) override.gatewayUrl = gatewayUrl;
+  if (subgraphUrl) override.subgraphUrl = subgraphUrl;
+
+  state.handleClient = await createEthersHandleClient(
+    state.signer as any,
+    Object.keys(override).length > 0 ? (override as any) : undefined,
   );
+  return state.handleClient;
+}
+
+async function encryptInput(value: bigint): Promise<{ handle: string; proof: string }> {
+  const client = await getHandleClient();
+  const { handle, handleProof } = await client.encryptInput(value, "uint256", CONFIG.venue as any);
+  return { handle, proof: handleProof };
+}
+
+/**
+ * Decrypts a handle the connected wallet holds a grant on. Returns null while
+ * the value is still unresolved — Nox is TEE-async, so "not yet computed" is a
+ * normal transient state, not an error, and must not be shown as a failure.
+ */
+async function tryDecrypt(handle: string): Promise<bigint | null> {
+  if (!handle || handle === ZeroHash) return null;
+  try {
+    const client = await getHandleClient();
+    const { value } = await client.decrypt(handle as any);
+    return BigInt(value as bigint);
+  } catch (e: any) {
+    if (e instanceof NotYetComputedHandleError || e instanceof UnknownHandleError) return null;
+    if (/not yet computed|unknown handle/i.test(e?.message ?? "")) return null;
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,18 +256,20 @@ interface FillRow {
 let orders: OrderRow[] = [];
 let fills: FillRow[] = [];
 
-/** Arrays expose no length getter, so enumerate from events. */
-async function enumerate(eventName: "OrderPosted" | "FillRecorded"): Promise<number> {
+/**
+ * Counts come from the contract, not from logs.
+ *
+ * Scanning events was the obvious approach and does not survive a hosted RPC:
+ * Alchemy's free tier rejects any eth_getLogs wider than 10 blocks, so
+ * `queryFilter(filter, 0, "latest")` fails outright. The Nox subgraph is no help
+ * either — it indexes Nox handles, not this contract's events. So the venue
+ * exposes ordersCount()/fillsCount() and we page by index.
+ */
+async function enumerate(which: "orders" | "fills"): Promise<number> {
   if (!state.venue) return 0;
   try {
-    const filter = state.venue.filters[eventName]();
-    const logs: Log[] = await state.venue.queryFilter(filter, 0, "latest");
-    let max = -1;
-    for (const log of logs) {
-      const parsed = state.venue.interface.parseLog({ topics: [...log.topics], data: log.data });
-      if (parsed) max = Math.max(max, Number(parsed.args[0]));
-    }
-    return max + 1;
+    const count = which === "orders" ? await state.venue.ordersCount() : await state.venue.fillsCount();
+    return Number(count);
   } catch {
     return 0;
   }
@@ -241,10 +281,7 @@ async function refresh() {
     return;
   }
 
-  const [orderCount, fillCount] = await Promise.all([
-    enumerate("OrderPosted"),
-    enumerate("FillRecorded"),
-  ]);
+  const [orderCount, fillCount] = await Promise.all([enumerate("orders"), enumerate("fills")]);
 
   const nextOrders: OrderRow[] = [];
   for (let i = 0; i < orderCount; i++) {
@@ -326,8 +363,24 @@ async function refreshOwnPosition() {
       // A viewer grant is what makes the balance decryptable off-chain. Its
       // absence is the classic dead-handle bug and must be visible, not silent.
       const canView = await state.nox.isViewer(handle, state.account);
-      $(stateEl).textContent = canView ? "decryptable by you" : "no viewer grant";
-      $(stateEl).className = canView ? "pill ok" : "pill warn";
+      if (!canView) {
+        $(stateEl).textContent = "no viewer grant";
+        $(stateEl).className = "pill warn";
+        continue;
+      }
+
+      // Actually decrypt it. A null result means the Runner has not resolved
+      // the handle yet — a normal transient state under TEE-async execution,
+      // shown as pending rather than as an error or as a zero.
+      const value = await tryDecrypt(handle);
+      if (value === null) {
+        $(stateEl).textContent = "resolving…";
+        $(stateEl).className = "pill warn";
+      } else {
+        $(handleEl).textContent = value.toString();
+        $(stateEl).textContent = "decrypted (only you can)";
+        $(stateEl).className = "pill ok";
+      }
     } catch {
       $(handleEl).textContent = "—";
       $(stateEl).textContent = "read failed";

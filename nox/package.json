@@ -18,6 +18,7 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@iexec-nox/handle": "^0.1.0-beta.13",
     "@iexec-nox/nox-protocol-contracts": "0.2.4",
     "encrypted-types": "^0.0.4"
   }

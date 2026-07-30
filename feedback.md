@@ -165,6 +165,83 @@ A mock-Runner mode that resolves handles synchronously would be even better, and
 would let teams assert arithmetic in CI. This is the single highest-leverage
 addition we can imagine for Nox's developer experience.
 
+## 12. The subgraph indexes handles, not the application's own events
+
+`@iexec-nox/handle` ships a `subgraphUrl` per network, and the natural assumption
+is that it is a general indexer for the deployment. It is not — it indexes Nox
+handles, so it cannot be used to enumerate an application contract's own events.
+
+That matters more than it sounds, because hosted RPCs restrict the alternative:
+Alchemy's free tier rejects any `eth_getLogs` spanning more than 10 blocks, so
+`queryFilter(filter, 0, "latest")` is not available either. We ended up adding
+explicit `ordersCount()` / `fillsCount()` view functions and paging by index.
+
+That is the right answer anyway, but it is worth stating in the docs, because the
+combination — no app-level indexing, no wide log queries — is easy to discover
+late, after the frontend is already written against events.
+
+**Suggestion:** say plainly what the subgraph covers, and recommend on-chain
+counters for application state.
+
+## 13. Public RPCs break Nox deploys specifically
+
+Not an iExec bug, but worth documenting for anyone following the guides. A Nox
+contract deploy is unusually transaction-dense: `Nox.toEuint256` in a constructor
+is a real external call, and a single `fill()` fans out to ~25 NoxCompute calls.
+Against a load-balanced public endpoint, `eth_getTransactionCount` returned stale
+values between sends, producing `replacement transaction underpriced` and then
+`nonce too low` on consecutive transactions.
+
+Five rapid pending-nonce reads against a single-node provider agreed every time;
+the same pattern against the public endpoint did not.
+
+**Suggestion:** the quickstart should recommend a single-node RPC, and the
+starter template should track nonces locally. A half-completed deploy is an
+expensive way to learn this.
+
+---
+
+## Live-stack notes (Ethereum Sepolia, 30 July 2026)
+
+Recording these because they are the numbers we could not get from documentation.
+
+**The off-chain stack on Ethereum Sepolia is fast.** A full round trip —
+`encryptInput` → `depositCash` (132,789 gas, one `Nox.add`) → `decrypt` —
+returned the correct plaintext **~1.8 seconds** after the transaction was mined.
+We had budgeted 60 seconds. Whatever the docs imply about TEE-async latency, the
+practical experience on this chain is close to interactive.
+
+**The ACL model behaves exactly as the source suggests.** `viewACL` on the
+resulting handle returned:
+
+```json
+{ "isPublic": false,
+  "admins":  ["0x…the venue contract"],
+  "viewers": ["0x…the depositor"] }
+```
+
+`allowThis` for the contract and `addViewer` for the human produced precisely the
+least-privilege split we wanted, with nothing public. This is the first thing we
+would point a new Nox developer at, because it makes the admin/viewer
+distinction concrete in a way the prose does not.
+
+**Measured gas, for anyone sizing a deployment:**
+
+| Operation | Gas |
+|---|---|
+| `DeferralVenue` deploy (incl. one `toEuint256`) | 1,523,481 |
+| `ConfidentialWrapper` deploy | 1,157,495 |
+| `depositCash` (one `Nox.add`) | 132,789 |
+| `postAsk` (2 `fromExternal`, 1 transfer, 6 grants) | 360,713 |
+| `fill` (~25 NoxCompute calls) | 784,211 |
+| `reportTrade` (one `allowPublicDecryption`) | 65,598 |
+
+`fill()` is the expensive one and still only ~2% of a Sepolia block, which was
+better than we feared given how many external calls the branchless pattern
+forces. Worth publishing something like this: "is my confidential contract going
+to fit in a block" is an early, load-bearing question and currently unanswerable
+without building the thing.
+
 ---
 
 ## What worked well
@@ -183,3 +260,16 @@ addition we can imagine for Nox's developer experience.
   made the "unsupported chain" failure mode loud and early.
 - **`allowThis` as a distinct call** is a good affordance once the admin/viewer
   asymmetry is understood.
+- **`@iexec-nox/handle` needs no configuration on a supported chain.**
+  `createEthersHandleClient(signer)` resolves gateway, contract address and
+  subgraph from the chain id alone, and `NETWORK_CONFIGS` in the source is a
+  clear, readable statement of what is deployed where. After the friction of
+  source-diving the Solidity side, this was a pleasant surprise.
+- **`NotYetComputedHandleError` as a distinct error type** is exactly right. It
+  makes "the Runner has not got to it yet" programmatically distinguishable from
+  a real failure, which is what lets a UI show a pending state instead of an
+  error. Given that async lag and a dead handle otherwise look identical from the
+  frontend (point 6), this typed error is doing a lot of work.
+- **`encryptInput` binding the proof to (owner, app)** is a good design. Getting
+  it wrong fails loudly with "App mismatch" rather than silently, which is the
+  opposite of the ACL failure mode and much easier to debug.

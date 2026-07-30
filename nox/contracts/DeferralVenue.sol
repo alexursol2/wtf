@@ -100,6 +100,24 @@ contract DeferralVenue {
     }
 
     // ------------------------------------------------------------------
+    // Enumeration
+    // ------------------------------------------------------------------
+
+    /// Solidity generates no length getter for a public array, and enumerating
+    /// via events is not viable: hosted RPCs cap eth_getLogs at a narrow block
+    /// range (Alchemy's free tier allows 10 blocks), and the Nox subgraph
+    /// indexes handles rather than this contract's events. So the frontend
+    /// pages by index off these counts instead of scanning logs.
+
+    function ordersCount() external view returns (uint256) {
+        return orders.length;
+    }
+
+    function fillsCount() external view returns (uint256) {
+        return fills.length;
+    }
+
+    // ------------------------------------------------------------------
     // Escrow
     // ------------------------------------------------------------------
 
@@ -183,6 +201,14 @@ contract DeferralVenue {
         require(o.state == OrderState.Open, "not fillable");
         require(block.timestamp < o.expiry, "expired");
         require(identityRegistry.isVerified(msg.sender), "not verified");
+
+        // A self-fill is not merely a wash trade, it is a balance bug: with
+        // msg.sender == o.maker, escrowCash[msg.sender] and escrowCash[o.maker]
+        // read the SAME handle, and the two writes below land in the SAME
+        // storage slot. The second wins, so the debit is discarded and the
+        // filler ends up credited. Reject it in plaintext — the identity of the
+        // counterparty is public anyway, so this require leaks nothing.
+        require(msg.sender != o.maker, "self fill");
 
         euint256 bid = Nox.fromExternal(encBid, bidProof);
         euint256 wanted = Nox.fromExternal(encQty, qtyProof);

@@ -1,10 +1,18 @@
 import type { HardhatUserConfig } from "hardhat/config";
 import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
 
+import { loadEnv, accountsArray } from "./lib/env.js";
+
+// .env lives at the repo root so one file serves both Hardhat projects.
+loadEnv();
+
 const RPC_URL = process.env.RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com";
 const ARB_RPC_URL = process.env.ARB_RPC_URL ?? "https://arbitrum-sepolia-rpc.publicnode.com";
-const PRIVATE_KEY = process.env.PRIVATE_KEY ?? "";
-const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
+
+// Signer order is DEPLOYER, MAKER, TAKER, AUDITOR — scripts index on this.
+// The maker and taker MUST be distinct: filling your own order writes both
+// sides of the cash transfer to one storage slot (see DeferralVenue.fill).
+const accounts = accountsArray();
 
 const config: HardhatUserConfig = {
   plugins: [hardhatToolboxViem],
