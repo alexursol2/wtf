@@ -128,6 +128,14 @@ The fill price is a **snapshot handle** (`Nox.add(o.price, ZERO)`), never the li
 
 *Mitigation:* the wrapper re-enforces `IdentityRegistry.isVerified` plus the country rule on every path that credits a confidential balance — wrap, confidential transfer, and unwrap.
 
+This is demonstrable rather than asserted:
+
+```bash
+npx hardhat run scripts/compliance-demo.ts --network sepolia
+```
+
+It shows the pooled balance at Layer 1, then a confidential transfer to a restricted country failing with revert reason `"country"` — on a transfer whose amount is a ciphertext handle — and the same path succeeding to an allowed country, so the rejection is the rule working rather than the path being broken. Reverting on identity and country leaks nothing, because both are plaintext facts; the amount never is.
+
 **Amount-gated rules are not enforced on the encrypted path.**
 
 > We re-enforce **identity and country** rules inside the confidential layer. **Amount-gated rules — max balance, max transfer size, supply limits — are not enforced on the encrypted path.** Enforcing them would require a readable comparison against an encrypted balance, which the architecture deliberately makes impossible. A branchless `select(withinCap, amount, ZERO)` would restore them at the cost of settling violations to zero rather than reverting; we did not ship it. Documented limitation, not an oversight.
@@ -283,6 +291,7 @@ Live on Ethereum Sepolia, no mocks in any demo path. See `deployments/*.sepolia.
 | Public tape with live countdown | done |
 | Holder register, grant on demand | done (`scripts/register-demo.ts`) |
 | Auditor route | done — regulator-vs-public side by side, unreported fills, register |
+| Compliance rejection on the encrypted path | done (`scripts/compliance-demo.ts`) |
 
 The auditor route shows the disclosure gap directly: for each fill, what the
 regulator can decrypt beside what the public can currently see. A row is flagged
