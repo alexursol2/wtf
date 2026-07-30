@@ -1,10 +1,12 @@
 # Deferral Venue
 
-**A confidential RFQ venue for tokenized bonds, with post-trade disclosure modelled on the MiFIR transparency regime.**
+**A trading venue that publishes on a schedule: price at settlement, volume when the deferral elapses, and the regulator ahead of both.**
 
-The book is dark pre-trade under a large-in-scale waiver. Price prints at settlement. Volume prints on the deferral schedule. The regulator holds the volume from the first block.
+That schedule is the product. An RFQ venue for tokenized bonds, with post-trade disclosure modelled on the MiFIR transparency regime — dark pre-trade under a large-in-scale waiver, then printing in the order and at the times the regime prescribes.
 
-We did not add a privacy feature to a trading venue. We implemented **both halves of a transparency regime** as a smart contract.
+We did not add a privacy feature to a trading venue. We implemented **both halves of a transparency regime** as a smart contract. Hiding data is the easy half; deciding *when it stops being hidden, and to whom* is the half that makes it a venue.
+
+That is what **programmable privacy** buys here. Not concealment, but a disclosure schedule enforced by the protocol rather than by a policy document: **selective disclosure** to the regulator at the moment of the fill, **auditability on demand** for the holder register, and public prints on the deferral clock. And because the ERC-3643 token is wrapped rather than forked, it is **privacy without breaking composability** — the underlying asset stays exactly what it was.
 
 > Throughout this repository the phrasing is **"modelled on the MiFIR regime"**, never "compliant with". Thresholds are recalibrated per instrument annually and none of this has been near a lawyer.
 
@@ -14,7 +16,7 @@ We did not add a privacy feature to a trading venue. We implemented **both halve
 
 **1. No operator in the matching decision.** The nearest prior art routes matching through a gateway callback: an off-chain actor evaluates the encrypted comparison and calls back to finalise the fill. That actor learns whether the order crossed. Branchless `select` puts **nobody** in that position — not the venue operator, not iExec, not the TEE Runner. Operator orderflow visibility is named in dark-pool research as the thing that reintroduces the exact asymmetry dark pools exist to remove.
 
-**2. T-REX is unmodified.** Other confidential ERC-3643 projects fork the token. We wrap it. That is technically weaker — hence the pooling limitation named below — but it is literally the brief: add confidentiality without modifying the underlying protocol.
+**2. T-REX is unmodified.** Other confidential ERC-3643 projects fork the token. We wrap it. That is technically weaker — hence the pooling limitation named below — but it is literally the brief: privacy without breaking composability, added on top of the underlying protocol rather than carved into it. A forked token is a new asset; a wrapped one is still the bond.
 
 **None of the ingredients are novel.** Confidential ERC-3643, the ERC-20→confidential wrapper, the three-layer stack, and encrypted RFQ with post-trade reveal all exist already. The assembly is ours; "novel combination" is a weak claim and we do not lean on it.
 
@@ -103,6 +105,8 @@ The obstacle is topological rather than cryptographic. That service is a **sidec
 **So per-fill attestation is designed, not shipped.** The design is concrete — add an `attestationRef` to `Fill`, have the runner bind the fill id into the quote's custom data, and surface the quote, RTMRs and compose hash per trade. We did not add the field, because we could not populate it, and a struct member that is always empty is a worse misrepresentation than an acknowledged gap.
 
 ## Disclosure matrix
+
+Selective disclosure, party by party. Note the two different mechanisms: fill volumes reach the regulator **automatically** at the moment of the fill, while the holder register is **auditability on demand** — sealed until the issuer discloses a named holder. The venue operator row is the one worth arguing about.
 
 | Party | Sees |
 |---|---|
