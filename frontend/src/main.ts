@@ -380,8 +380,22 @@ function setView(role: Role) {
   // the address fixed in the contract, not from the investor whitelist.
   el("complianceChip")?.classList.toggle("hidden", role === "auditor");
   el("pairSelect")?.classList.toggle("hidden", role === "auditor");
+  syncWalletButton();
   applyColumnWidths();
   void refresh();
+}
+
+/**
+ * The wallet button exists only when there is a wallet.
+ *
+ * Disconnected, it opened a panel of dashes: no position to read, no balance to
+ * withdraw. Hiding it removes a control that could not do anything, and makes
+ * "Connect wallet" the single obvious action in the bar.
+ */
+function syncWalletButton() {
+  const show = !!state.account && state.role !== "auditor";
+  el("walletBtn")?.parentElement?.classList.toggle("hidden", !show);
+  if (!show) el("walletPanel")?.classList.add("hidden");
 }
 
 /** Picks the view from the connected account. Read-only defaults to trading. */
@@ -508,6 +522,7 @@ async function disconnect() {
   $("connect").classList.remove("hidden");
   $("connect").textContent = "Connect wallet";
   $("disconnect").classList.add("hidden");
+  syncWalletButton();
   $("complianceChip").className = "pill muted";
   $("complianceChip").textContent = "compliance unknown";
 
@@ -805,6 +820,50 @@ function persistHidden() {
  * no known denominator, so it gets "size not disclosed" instead of a bar. A
  * fabricated percentage would be exactly the lie rule 1 forbids.
  */
+/**
+ * Which instrument each order was posted for.
+ *
+ * `DeferralVenue.Order` has no instrument field, so the chain genuinely cannot
+ * answer this — every order rests in one book regardless of what it is for.
+ * Orders posted from THIS browser are tagged here, which is honest because we
+ * know what the user selected when they posted.
+ *
+ * Untagged orders resolve to the FIRST instrument, and that is a statement of
+ * fact rather than a fallback: every order on this venue predates the other two
+ * instruments existing, so they are all genuinely ACME30. Treating untagged as
+ * "matches whatever is selected" was the bug — it made one ACME30 print appear
+ * as the last traded price for Apple and Tesla alike.
+ *
+ * The residual limit is orders posted from ANOTHER browser after this change:
+ * nothing on-chain records their instrument, so they will read as ACME30. The
+ * only complete fix is `uint8 instrument` on Order and Fill plus a redeploy.
+ */
+const ORDER_INSTRUMENT_KEY = "orders:instrument";
+const orderInstrument = new Map<number, string>(
+  (() => {
+    try {
+      return Object.entries(
+        JSON.parse(localStorage.getItem(ORDER_INSTRUMENT_KEY) ?? "{}") as Record<string, string>,
+      ).map(([k, v]) => [Number(k), v] as [number, string]);
+    } catch {
+      return [];
+    }
+  })(),
+);
+function rememberOrderInstrument(id: number, symbol: string) {
+  orderInstrument.set(id, symbol);
+  localStorage.setItem(
+    ORDER_INSTRUMENT_KEY,
+    JSON.stringify(Object.fromEntries(orderInstrument)),
+  );
+}
+
+/** True when an order should appear under the selected instrument. */
+function matchesInstrument(id: number): boolean {
+  const tag = orderInstrument.get(id) ?? INSTRUMENTS[0].symbol;
+  return tag === state.instrument.symbol;
+}
+
 const POSTED_KEY = "orders:posted";
 const postedQty = new Map<number, bigint>(
   (() => {
@@ -1230,7 +1289,9 @@ function orderStatusChip(o: OrderRow, expired: boolean): string {
 
 function renderBook() {
   const host = el("book");
-  const live = orders.filter((o) => o.stateCode !== OrderState.Cancelled);
+  const live = orders.filter(
+    (o) => o.stateCode !== OrderState.Cancelled && matchesInstrument(o.id),
+  );
 
   // Count tag on the toggle button reflects the whole live book, not the filter.
   const countEl = el("bookCount");
@@ -1313,7 +1374,7 @@ function renderBook() {
               : `<button class="small" data-trade="${o.id}" data-bucket="${Bucket.LargeInScale}" ${canFill ? "" : "disabled"}
                    data-tip="${
                      canFill
-                       ? "Loads this order into the entry terminal, where you set bid, size and bucket before signing."
+                       ? "Loads this order into the entry terminal, where you set bid, size and visibility delay before signing."
                        : expired
                          ? "This order has expired."
                          : pending
@@ -1440,7 +1501,9 @@ function renderTicker() {
 
   // Task: the tape carries only prints with an open parameter, minus anything
   // the viewer has permanently hidden.
-  const visible = fills.filter((f) => f.pricePublic && !hiddenFills.has(f.id));
+  const visible = fills.filter(
+    (f) => f.pricePublic && !hiddenFills.has(f.id) && matchesInstrument(f.id),
+  );
 
   if (!visible.length) {
     const sig = `empty:${hiddenFills.size}`;
@@ -1591,9 +1654,12 @@ function renderAuditorFills(isAuditor: boolean) {
         <div class="row-main">
           <div class="row-title">
             <strong>fill #${f.id}</strong>
-            <span class="pill ${f.bucket === Bucket.LargeInScale ? "warn" : "muted"}">${
-              f.bucket === Bucket.LargeInScale ? "LIS" : "standard"
-            }</span>
+            <span class="pill ${f.bucket === Bucket.LargeInScale ? "warn" : "muted"}"
+              data-tip="${
+                f.bucket === Bucket.LargeInScale
+                  ? "Deferred schedule: this trade claimed a large-in-scale waiver, so its size is withheld from the public tape for a set period while the price prints at settlement. The claim is a DECLARATION the contract cannot check — the quantity is a ciphertext — which is why you hold the real size from the moment of the fill."
+                  : "Immediate schedule: no waiver claimed, so the size becomes public as soon as the maker reports the trade."
+              }">${f.bucket === Bucket.LargeInScale ? "Deferred — LIS waiver ⓘ" : "Immediate ⓘ"}</span>
             ${gapOpen ? statusChip("computing", "gap open") : statusChip("confirmed", "public caught up")}
           </div>
           <div class="gap-grid">
@@ -1894,9 +1960,25 @@ function spendable(): { amount: bigint | null; source: "wallet" | "escrow" | nul
 function lastPrint(): { price: bigint; fillId: number } | null {
   for (let i = fills.length - 1; i >= 0; i--) {
     const f = fills[i];
-    if (f.pricePublic && f.priceValue !== null) return { price: f.priceValue, fillId: f.id };
+    if (!f.pricePublic || f.priceValue === null) continue;
+    // Fills inherit their order's instrument tag where we have one.
+    if (!matchesInstrument(f.id)) continue;
+    return { price: f.priceValue, fillId: f.id };
   }
   return null;
+}
+
+/**
+ * The price to reckon with: a real print if one exists for this instrument,
+ * otherwise the instrument's indicative level.
+ *
+ * The distinction is kept visible everywhere it is shown — a print is something
+ * that happened, an indicative is reference data — but for arithmetic (sizing a
+ * percentage allocation, seeding the limit field) either is a usable number and
+ * having none at all is what makes the control useless.
+ */
+function referencePrice(): bigint {
+  return lastPrint()?.price ?? state.instrument.indicative;
 }
 
 /** Scaled integer → human decimal, e.g. 987500 → "98.7500". */
@@ -1915,25 +1997,32 @@ function renderMark() {
 
   const last = lastPrint();
   const sym = state.instrument.symbol;
+  const labelEl = el("markLabel");
 
-  if (!last) {
-    priceEl.textContent = "—";
-    if (metaEl) metaEl.textContent = `${sym} · nothing has printed yet`;
-    if (hintEl) hintEl.textContent = "98.7500 → 987500";
-    return;
-  }
+  // A print and an indicative are both usable numbers but they are not the same
+  // claim, so the label changes with the source rather than blurring them.
+  const price = last ? last.price : state.instrument.indicative;
+  const kind = last ? "Last print" : "Indicative";
 
-  priceEl.textContent = unscale(last.price);
-  if (metaEl) metaEl.textContent = `${sym} · fill #${last.fillId} · scaled ${fmt(last.price)}`;
-  if (hintEl) hintEl.textContent = `last ${unscale(last.price)} → ${fmt(last.price)}`;
+  if (labelEl) labelEl.textContent = kind;
+  priceEl.textContent = unscale(price);
+  if (metaEl)
+    metaEl.textContent = last
+      ? `${sym} · fill #${last.fillId} · scaled ${fmt(price)}`
+      : `${sym} · reference level, nothing has printed yet`;
+  if (hintEl) hintEl.textContent = `${unscale(price)} → ${fmt(price)}`;
 
   // Same reference wherever the instrument is named, so no panel quotes a
   // different number than its neighbour.
   const ordersRef = el("myOrdersRef");
-  if (ordersRef) ordersRef.textContent = `${sym} · last ${unscale(last.price)}`;
+  if (ordersRef) ordersRef.textContent = `${sym} · ${kind.toLowerCase()} ${unscale(price)}`;
 
   const bondMark = el("bondMark");
-  if (bondMark) bondMark.textContent = `last print ${unscale(last.price)}`;
+  if (bondMark) bondMark.textContent = `${kind.toLowerCase()} ${unscale(price)}`;
+
+  // Seed the limit field so it is never empty and never wrong for the pair.
+  const priceInput = el("entryPrice") as HTMLInputElement | null;
+  if (priceInput) priceInput.placeholder = price.toString();
 }
 
 function renderAllocSource() {
@@ -1967,8 +2056,17 @@ function renderAllocSource() {
 function applyAllocation(pct: number) {
   const qtyEl = el("entryQty") as HTMLInputElement | null;
   const { amount } = spendable();
+
+  // NO TOASTS on this path. Dragging the slider fires `input` continuously, so
+  // a toast per event stacked four or five identical cards down the screen. The
+  // reason it cannot size is a steady-state fact about the form, not an event,
+  // so it belongs in the panel's own note where it can be read once.
   if (!qtyEl || amount === null) {
-    toast("info", "Balance not resolved", "The percentage needs a readable balance to size against.");
+    const note = el("allocNote");
+    if (note)
+      note.textContent = state.account
+        ? "No readable balance yet for this leg — enter a quantity directly."
+        : "Connect a wallet to size against a balance.";
     return;
   }
 
@@ -1978,16 +2076,13 @@ function applyAllocation(pct: number) {
     return;
   }
 
-  // Buying: cash buys qty = cash × SCALE ÷ price. Prefer the typed limit; fall
-  // back to the last public print, which is the only other honest number here.
+  // Buying: cash buys qty = cash × SCALE ÷ price. Prefer the typed limit, then
+  // the last public print, then the instrument's indicative price.
   const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  const ref = typed > 0n ? typed : (lastPrint()?.price ?? 0n);
+  const ref = typed > 0n ? typed : referencePrice();
   if (ref <= 0n) {
-    toast(
-      "info",
-      "No price to size against",
-      "Converting cash into a share count needs a price, and nothing has printed yet. Enter a limit price.",
-    );
+    const note = el("allocNote");
+    if (note) note.textContent = "Enter a limit price — cash cannot be converted to a size without one.";
     return;
   }
   qtyEl.value = (((amount * BigInt(pct)) / 100n) * state.priceScale / ref).toString();
@@ -2097,10 +2192,24 @@ function renderEntry() {
     .querySelectorAll<HTMLElement>("[data-ordertype]")
     .forEach((n) => n.classList.toggle("on", n.dataset.ordertype === entry.type));
 
-  // Buy hits one resting order; sell creates one, so the target picker and the
-  // expiry/bucket controls swap over.
+  // Buy hits one resting order; sell creates one, so the target picker swaps in.
   el("targetField")?.classList.toggle("hidden", !buy);
-  el("expiryField")?.classList.toggle("hidden", buy);
+
+  // Time in force applies to BOTH sides, but means different things, so the
+  // label and the note change rather than the control disappearing. On a sell
+  // it is how long the order rests. On a buy the fill is atomic — there is
+  // nothing to rest — so it is a deadline on the attempt itself: past it the
+  // contract rejects with "expired", which is the protection against a
+  // signed-but-unbroadcast fill landing at a price you no longer want.
+  el("expiryField")?.classList.remove("hidden");
+  el("gtcWrap")?.classList.toggle("hidden", buy);
+  const tifLabel = el("tifLabel");
+  if (tifLabel) tifLabel.textContent = buy ? "Valid for (min)" : "Time in force (min)";
+  const tifNote = el("tifNote");
+  if (tifNote)
+    tifNote.textContent = buy
+      ? "How long this attempt stays valid. The order you hit must still be unexpired when the transaction lands."
+      : "How long your offer rests on the book before it expires.";
 
   const priceEl = el("entryPrice") as HTMLInputElement | null;
   const priceLabel = el("priceLabel");
@@ -2157,8 +2266,8 @@ function renderEntry() {
   if (bucketNote) {
     const lis = (el("entryBucket") as HTMLSelectElement | null)?.value !== "0";
     bucketNote.textContent = lis
-      ? `Claims the large-in-scale waiver: price prints at settlement, volume is withheld for ${state.lisDeferral}s. The auditor sees the real size immediately.`
-      : "No waiver claimed: volume becomes public as soon as the maker reports the trade.";
+      ? `Price prints at settlement; the size stays off the public tape for ${state.lisDeferral}s. The regulator sees the real size immediately either way.`
+      : "The size becomes public as soon as the trade is reported.";
   }
 
   renderTargetOptions();
@@ -2320,7 +2429,12 @@ async function onEntrySubmit(e: Event) {
       // The id is the pre-push array length, i.e. the count before this post.
       try {
         const id = (await count("orders")) - 1;
-        if (id >= 0) rememberPosted(id, qty);
+        if (id >= 0) {
+          rememberPosted(id, qty);
+          // Tag it, so the book can be filtered by pair despite the contract
+          // carrying no instrument field.
+          rememberOrderInstrument(id, state.instrument.symbol);
+        }
       } catch {
         /* progress bar degrades to "size not disclosed" — never to a guess */
       }
@@ -2369,6 +2483,65 @@ function loadIntoTerminal(orderId: number, bucket: number) {
 
   el("colEntry")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   (el("entryQty") as HTMLInputElement | null)?.focus();
+}
+
+/**
+ * Withdraw — releases a hidden balance back to plaintext tokens.
+ *
+ * This is the wrapper's unwrap path, and it is genuinely two transactions
+ * because of what confidentiality costs. `requestUnwrap` locks the amount and
+ * publishes ONLY a success flag: whether the balance covered it, never what the
+ * balance was. `claimUnwrap` then releases the tokens against a gateway proof of
+ * that flag. A single-call unwrap would have to reveal the balance to decide
+ * whether it could succeed.
+ *
+ * Note what this does NOT withdraw: venue escrow. `DeferralVenue` has
+ * depositCash and depositShares and no counterpart — there is no withdraw
+ * function on the deployed contract, so escrow can only be released by
+ * cancelling an order back into it. Adding one needs a redeploy.
+ */
+async function onWithdraw(e: Event) {
+  e.preventDefault();
+  if (!state.signer) {
+    toast("error", "Connect a wallet first");
+    return;
+  }
+  const wrapperAddress = state.instrument.wrapper;
+  if (!wrapperAddress) {
+    toast("error", `No wrapper deployed for ${state.instrument.symbol}`);
+    return;
+  }
+
+  const raw = (el("withdrawAmount") as HTMLInputElement)?.value;
+  if (!raw || Number(raw) <= 0) {
+    toast("error", "Amount must be positive");
+    return;
+  }
+
+  const note = el("withdrawNote");
+
+  await asyncAction(
+    {
+      button: document.querySelector<HTMLButtonElement>(`[data-async="withdraw"]`),
+      label: `Withdraw ${state.instrument.symbol}`,
+      async: true,
+      onSettled: refresh,
+    },
+    async () => {
+      const wrapper = new Contract(wrapperAddress, WRAPPER_ABI, state.signer!);
+      const token = new Contract(await wrapper.underlying(), ERC20_ABI, state.signer!);
+      const decimals: bigint = await token.decimals();
+      const amount = parseUnits(raw, Number(decimals));
+
+      const tx = await wrapper.requestUnwrap(amount);
+      const receipt = await tx.wait();
+
+      if (note)
+        note.textContent =
+          "Request submitted. The success flag is resolving in the TEE; claim the tokens once it lands.";
+      return receipt;
+    },
+  );
 }
 
 async function onWrap(e: Event) {
@@ -2537,6 +2710,7 @@ initTooltips();
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("disconnect").addEventListener("click", () => disconnect().catch((e) => banner(e.message, "error")));
 $("wrapForm").addEventListener("submit", (e) => void onWrap(e));
+el("withdrawForm")?.addEventListener("submit", (e) => void onWithdraw(e));
 $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
 
 // --- instrument selector
@@ -2550,8 +2724,10 @@ $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
       "All three instruments are deployed and share one IdentityRegistry. The order book is shared: DeferralVenue.Order carries no instrument field, so orders are not separated by pair.";
     sel.addEventListener("change", () => {
       state.instrument = INSTRUMENTS[Number(sel.value)] ?? INSTRUMENTS[0];
-      const sym = el("bondSymbol");
-      if (sym) sym.textContent = state.instrument.symbol;
+      for (const id of ["bondSymbol", "withdrawSymbol"]) {
+        const n = el(id);
+        if (n) n.textContent = state.instrument.symbol;
+      }
 
       // Balances and the encrypted wrapper handle are per-instrument, so they
       // are stale the moment the pair changes.

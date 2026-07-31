@@ -29,6 +29,15 @@
   --danger: #d64545;
   --public: #d64545;
 
+  /* Side colours are SEPARATE from --ok / --danger on purpose. Those two carry
+     "succeeded" and "failed" on status chips, and a buy is not a success any
+     more than a sell is a failure. Keeping them apart lets the side palette be
+     soft without washing out a real error. */
+  --buy: #8ecfa8;
+  --buy-ink: #0d2e1a;
+  --sell: #e8a3a3;
+  --sell-ink: #3a1414;
+
   --r-lg: 18px;
   --r-md: 12px;
   --r-sm: 8px;
@@ -57,6 +66,11 @@
   --pending: #fbbf24;
   --danger: #f87171;
   --public: #fb7185;
+  /* Muted against the dark ground, where a pastel would glare. */
+  --buy: #5f9e79;
+  --buy-ink: #eafff1;
+  --sell: #b06f6f;
+  --sell-ink: #ffeeee;
 }
 
 * {
@@ -644,6 +658,23 @@ button.small {
   align-items: end;
 }
 
+/* Sub-panels and prose span the whole form.
+ *
+ * The form is a multi-column auto-fit grid, so anything dropped into it becomes
+ * a COLUMN by default. That is right for a labelled input and wrong for
+ * everything else: the allocation panel, the safety banner and the explanatory
+ * notes were each squeezed into one ~205px column of a 422px form, which is
+ * what pushed the preset buttons out through the panel's rounded border and
+ * left the notes as narrow ribbons. These are row-level elements, so they say
+ * so. */
+.form > .alloc,
+.form > .safety,
+.form > .micro,
+.form > .entry-note,
+.form > button[type="submit"] {
+  grid-column: 1 / -1;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -1169,6 +1200,20 @@ footer p {
   stroke-linejoin: round;
 }
 
+/* The wallet is the way into your position, so it is the largest control in the
+   bar — double the standard icon button. It only appears once a wallet is
+   connected; with nothing to show, it was a button that opened an empty panel. */
+#walletBtn {
+  width: 68px;
+  height: 68px;
+  border-radius: var(--r-md);
+}
+
+#walletBtn svg {
+  width: 34px;
+  height: 34px;
+}
+
 .icon-btn:hover,
 .icon-btn[aria-expanded="true"] {
   background: var(--accent);
@@ -1444,15 +1489,15 @@ footer p {
 }
 
 .side.buy.on {
-  background: var(--ok);
-  border-color: var(--ok);
-  color: #05230f;
+  background: var(--buy);
+  border-color: var(--buy);
+  color: var(--buy-ink);
 }
 
 .side.sell.on {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #2a0606;
+  background: var(--sell);
+  border-color: var(--sell);
+  color: var(--sell-ink);
 }
 
 /* ------------------------------------------------------------ side theming --
@@ -1460,26 +1505,37 @@ footer p {
    terminal. Everything that should agree with the side reads it, so the whole
    interface turns green on buy and red on sell without any component knowing
    which side is active. `--side-ink` is the readable text colour on top of it. */
+/* The active side REDEFINES the accent itself.
+ *
+ * Every accent surface in this file already reads `--accent` — buttons, focus
+ * rings, the "yours" row tint, the reveal flash, the brand mark, the ticker
+ * label. Overriding the variable at the root recolours all of them at once and,
+ * more importantly, cannot go stale: a component added later inherits the side
+ * automatically instead of being forgotten in an enumerated list. That was the
+ * bug in the first attempt — primary buttons and focus rings stayed lime while
+ * everything around them turned green or red. */
 [data-side="buy"] {
-  --side: var(--ok);
-  --side-ink: #05230f;
+  --accent: var(--buy);
+  --accent-ink: var(--buy-ink);
+  --side: var(--buy);
+  --side-ink: var(--buy-ink);
 }
 
 [data-side="sell"] {
-  --side: var(--danger);
-  --side-ink: #2a0606;
+  --accent: var(--sell);
+  --accent-ink: var(--sell-ink);
+  --side: var(--sell);
+  --side-ink: var(--sell-ink);
 }
 
-/* Accent surfaces follow the side. The lime accent stays the brand mark in the
-   topbar; inside the workspace the side colour is the more useful signal. */
-[data-side] .card.terminal {
-  border-color: var(--side);
-  box-shadow: 6px 6px 0 color-mix(in srgb, var(--side) 26%, transparent);
-}
-
+/* Surfaces whose side colour is structural rather than an accent. */
+[data-side] .card.terminal,
 [data-side] .card.mine {
   border-color: var(--side);
-  box-shadow: 6px 6px 0 color-mix(in srgb, var(--side) 22%, transparent);
+}
+
+[data-side] .progress-bar {
+  background: var(--side);
 }
 
 [data-side] .seg.on {
@@ -1488,69 +1544,11 @@ footer p {
   color: var(--side-ink);
 }
 
-[data-side] .ghost[aria-expanded="true"] {
-  background: var(--side);
-  border-color: var(--side);
-  color: var(--side-ink);
-}
-
-[data-side] .icon-btn:hover,
-[data-side] .icon-btn[aria-expanded="true"] {
-  background: var(--side);
-  color: var(--side-ink);
-}
-
-[data-side] .entry-note {
-  border-left-color: var(--side);
-}
-
-[data-side] .ticker-label {
-  background: var(--side);
-  color: var(--side-ink);
-}
-
-[data-side] .ticker-label .help,
-[data-side] .tape-unhide {
-  border-color: var(--side-ink);
-  color: var(--side-ink);
-}
-
-[data-side] .progress-bar {
-  background: var(--side);
-}
-
-[data-side] .step,
-[data-side] .pill.solid {
-  background: var(--side);
-  color: var(--side-ink);
-  border-color: var(--side);
-}
-
-[data-side] .mark {
-  background: var(--side);
-}
-
-[data-side] .mark svg {
-  stroke: var(--side-ink);
-}
-
-[data-side] .role-tag {
-  background: var(--side);
-  color: var(--side-ink);
-}
-
-[data-side] .popover,
-[data-side] .modal-card {
-  box-shadow: 8px 8px 0 color-mix(in srgb, var(--side) 30%, transparent);
-}
-
-[data-side] .resizer:hover::before,
-[data-side] .resizer.dragging::before {
-  background: var(--side);
-}
-
-[data-side] .check input {
-  accent-color: var(--side);
+/* The regulator view has no side — it is not trading — so it keeps the brand
+   accent rather than inheriting whichever side the trader last used. */
+[data-role="auditor"] {
+  --accent: #c7f94e;
+  --accent-ink: #0a0a0a;
 }
 
 .seg-row {
@@ -1597,7 +1595,16 @@ footer p {
 
 /* ------------------------------------------------------- escrow allocation -- */
 
+/* Full width of the terminal, like every other field.
+ *
+ * It previously sat in a shrink-to-fit box: the head was a flex row that could
+ * not wrap, so a long balance string ("shares — not connected") forced the panel
+ * wider than its column, the 100% button spilled out of the rounded border, and
+ * the price label beside it was overlapped. `width: 100%` plus `min-width: 0` on
+ * the flex children keeps every part inside the panel at any column width. */
 .alloc {
+  width: 100%;
+  box-sizing: border-box;
   margin: 4px 0 12px;
   padding: 11px 12px;
   border: var(--border-soft);
@@ -1610,7 +1617,12 @@ footer p {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.alloc-head > * {
+  min-width: 0;
 }
 
 .alloc-label {
@@ -1629,15 +1641,18 @@ footer p {
 
 /* Slider and presets share one line: they are one control, and stacking them
    made the panel read as two separate decisions. */
+/* Slider and presets share a line while there is room, and wrap rather than
+   overflow when there is not. */
 .alloc-row {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .alloc input[type="range"] {
-  flex: 1;
-  min-width: 60px;
+  flex: 1 1 120px;
+  min-width: 0;
   accent-color: var(--side, var(--accent));
   margin: 0;
 }
@@ -1645,11 +1660,19 @@ footer p {
 .alloc-steps {
   display: flex;
   gap: 4px;
-  flex: none;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .alloc-steps .seg {
   padding: 4px 7px;
+  white-space: nowrap;
+}
+
+.alloc-source {
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------- reference price -- */
@@ -1783,16 +1806,14 @@ footer p {
 
 /* --------------------------------------------------------------- buttons -- */
 
-.submit-buy {
-  background: var(--ok);
-  border-color: var(--ok);
-  color: #05230f;
-}
-
+/* The submit button already gets the side colour through `button.primary`
+   reading the redefined `--accent`. These stay only to pin the border, and
+   deliberately reference the same side variables — the earlier versions hard-
+   coded --ok / --danger, which were both the wrong (unpastel) colour and dead
+   anyway, since `button.primary` outranks a bare class. */
+.submit-buy,
 .submit-sell {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #2a0606;
+  border-color: var(--side);
 }
 
 .danger {

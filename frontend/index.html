@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Deferral Venue — disclosure on a schedule</title>
+    <title>DEVEN — disclosure on a schedule</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -35,7 +35,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="mark"><svg><use href="#i-mark" /></svg></span>
-        <h1>Deferral Venue</h1>
+        <h1>DEVEN</h1>
         <button
           class="help"
           type="button"
@@ -95,15 +95,23 @@
               </div>
             </div>
 
-            <details class="howto">
-              <summary>How to fund this account</summary>
-              <ol class="howto-list">
-                <li>Connect a wallet on <strong>Ethereum Sepolia</strong>. On the wrong network, switch chains in your wallet.</li>
-                <li>Hold test ETH for gas from a Sepolia faucet.</li>
-                <li>Your address must be registered in the ERC-3643 IdentityRegistry, or every venue call reverts with <span class="mono">not verified</span>.</li>
-                <li>Deposit <strong>cash</strong> to buy, or wrap and deposit <strong>shares</strong> to sell, in <em>Escrow management</em>.</li>
-              </ol>
-            </details>
+            <div class="subsection">
+              <h4>Withdraw</h4>
+              <p class="hint left">
+                Releases a hidden balance back to your wallet as plaintext
+                <span id="withdrawSymbol" class="mono">ACME30</span>. Two steps on-chain: the
+                request locks the amount and publishes only a success flag, then the claim
+                releases the tokens.
+              </p>
+              <form id="withdrawForm" class="form">
+                <div class="field">
+                  <label for="withdrawAmount">Amount to withdraw</label>
+                  <input id="withdrawAmount" type="number" min="1" step="any" placeholder="2500" />
+                </div>
+                <button type="submit" class="primary" data-async="withdraw">Request withdrawal</button>
+              </form>
+              <p id="withdrawNote" class="micro"></p>
+            </div>
           </div>
         </div>
 
@@ -171,7 +179,7 @@
           <!-- Last public print for this instrument. The book is dark, so this is
                the only price anyone can honestly quote as a reference. -->
           <div class="mark-row">
-            <span class="mark-label">Last print</span>
+            <span id="markLabel" class="mark-label">Last print</span>
             <span id="markPrice" class="mark-price">—</span>
             <span id="markMeta" class="mark-meta"></span>
           </div>
@@ -252,23 +260,24 @@
 
             <div class="field" id="bucketField">
               <label for="entryBucket">
-                Disclosure bucket
-                <span class="help mini" tabindex="0" data-tip="Which MiFIR post-trade deferral this trade claims. Large in scale: the size clears the waiver threshold, so the volume print is DEFERRED (90s here; the real regime defers to end of the following quarter) while the price still prints at settlement. Standard: no waiver, so volume becomes public as soon as the trade is reported. The contract cannot verify the claim — the quantity is a ciphertext it can never read — so this is a DECLARATION. The auditor holds the real volume from the moment of the fill and checks the declaration against it.">?</span>
+                Visibility delay
+                <span class="help mini" tabindex="0" data-tip="How long the size of this trade stays off the public tape. Delayed: the trade qualifies for a large-in-scale waiver, so its price prints at settlement but its size is withheld for 90 seconds (the real regime withholds it far longer). Immediate: no waiver, so the size appears as soon as the trade is reported. Either way the regulator sees the true size straight away — the delay is public disclosure only, never supervisory.">?</span>
               </label>
               <select id="entryBucket">
-                <option value="1">Large in scale — volume deferred 90s</option>
-                <option value="0">Standard — volume public on report</option>
+                <option value="1">Delayed — size hidden for 90s</option>
+                <option value="0">Immediate — size public on report</option>
               </select>
               <p id="bucketNote" class="micro"></p>
             </div>
 
             <div class="field" id="expiryField">
-              <label for="entryExpiry">Time in force (min)</label>
+              <label for="entryExpiry"><span id="tifLabel">Time in force (min)</span></label>
               <input id="entryExpiry" type="number" min="1" step="1" value="60" />
-              <label class="check">
+              <label class="check" id="gtcWrap">
                 <input id="entryGtc" type="checkbox" />
                 <span>Good &rsquo;til cancelled (never expires)</span>
               </label>
+              <p id="tifNote" class="micro"></p>
             </div>
 
             <p id="fundingNote" class="micro"></p>
@@ -338,7 +347,7 @@
 
         <div class="card fill">
           <div class="card-head">
-            <h2>Fill volumes</h2>
+            <h2>Fill volumes &amp; deferral schedule</h2>
             <span class="hint">granted at the fill &mdash; before the public deferral elapses</span>
           </div>
           <div id="auditorFills" class="rows">
