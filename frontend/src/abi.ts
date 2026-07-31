@@ -38,6 +38,7 @@ export const VENUE_ABI = [
   "function PRICE_SCALE() view returns (uint256)",
   "function LIS_DEFERRAL() view returns (uint64)",
   "function auditor() view returns (address)",
+  "function identityRegistry() view returns (address)",
 
   // events — used to enumerate, since arrays have no length getter here
   "event OrderPosted(uint256 indexed id, address indexed maker, uint64 expiry)",
@@ -53,8 +54,19 @@ export const NOX_ABI = [
   "function isAllowed(bytes32 handle, address account) view returns (bool)",
 ] as const;
 
+/**
+ * Compliance is shown BEFORE an order is attempted, not surfaced as a revert
+ * afterwards, so the UI reads these directly.
+ */
+export const IDENTITY_REGISTRY_ABI = [
+  "function isVerified(address account) view returns (bool)",
+  "function investorCountry(address account) view returns (uint16)",
+] as const;
+
 export const WRAPPER_ABI = [
   "function underlying() view returns (address)",
+  "function countryGateActive() view returns (bool)",
+  "function allowedCountry(uint16) view returns (bool)",
   "function grantRegisterAccess(address holder, address viewer) external",
   "function wrap(uint256 amount) external",
   "function requestUnwrap(uint256 amount) external returns (uint256)",

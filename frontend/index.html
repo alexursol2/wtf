@@ -3,22 +3,46 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Deferral Venue — confidential RFQ for tokenized bonds</title>
+    <title>Deferral Venue — disclosure on a schedule</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <!-- Reusable inline icons. -->
+    <svg style="display: none">
+      <symbol id="i-lock" viewBox="0 0 14 14">
+        <path class="shackle" d="M4 6.5V4.2a3 3 0 0 1 6 0v2.3" />
+        <rect x="2.4" y="6.4" width="9.2" height="6.2" rx="1.6" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 14 14">
+        <rect x="4.6" y="4.6" width="7.8" height="7.8" rx="1.6" />
+        <path d="M9.4 2.6H2.6a1 1 0 0 0-1 1v6.8" />
+      </symbol>
+      <symbol id="i-mark" viewBox="0 0 18 18">
+        <path d="M2 6.2 9 2.4l7 3.8v5.6L9 15.6 2 11.8Z" />
+        <path d="M2 6.2 9 10l7-3.8M9 10v5.6" />
+      </symbol>
+    </svg>
+
     <header class="topbar">
       <div class="brand">
-        <span class="dot"></span>
+        <span class="mark"><svg><use href="#i-mark" /></svg></span>
         <div>
           <h1>Deferral Venue</h1>
-          <p class="sub">Confidential RFQ for tokenized bonds &middot; modelled on the MiFIR transparency regime</p>
+          <p class="sub">Price at settlement &middot; volume on the deferral &middot; regulator ahead of both</p>
         </div>
       </div>
+
+      <nav class="roles" id="roles" aria-label="Role">
+        <button class="role active" data-role="trader">Trader</button>
+        <button class="role" data-role="maker">Maker</button>
+        <button class="role" data-role="auditor">Auditor</button>
+      </nav>
+
       <div class="wallet">
+        <span id="complianceChip" class="pill muted">compliance unknown</span>
         <span id="netLabel" class="pill muted">not connected</span>
         <button id="connect" class="primary">Connect wallet</button>
-        <button id="disconnect" class="hidden" title="Clear this site's session and return to the public read-only view">
+        <button id="disconnect" class="hidden small" title="Clear this site's session and return to the public read-only view">
           Disconnect
         </button>
       </div>
@@ -26,224 +50,236 @@
 
     <div id="banner" class="banner hidden"></div>
 
-    <nav class="tabs">
-      <button id="tabMarket" class="tab active" data-view="market">Market</button>
-      <button id="tabAuditor" class="tab" data-view="auditor">Auditor view</button>
-    </nav>
-
-    <main id="viewMarket">
-      <!-- ---------------- own position ---------------- -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Your position</h2>
-          <span class="hint">handles are ciphertext — only you and the contract hold a grant</span>
-        </div>
-        <div class="grid2">
-          <div class="stat">
-            <label>Escrowed cash</label>
-            <code id="cashHandle" class="handle">—</code>
-            <span id="cashState" class="pill muted">no handle yet</span>
+    <div class="shell">
+      <!-- ================= YOUR POSITION — decrypted, yours ================= -->
+      <main id="viewTrader">
+        <section class="card mine">
+          <div class="card-head">
+            <h2>Your position</h2>
+            <span class="hint">decrypted with grants only you hold &mdash; not market data</span>
           </div>
-          <div class="stat">
-            <label>Escrowed shares</label>
-            <code id="sharesHandle" class="handle">—</code>
-            <span id="sharesState" class="pill muted">no handle yet</span>
-          </div>
-        </div>
-        <p class="note">
-          Balances decrypt off-chain against your viewer grant, via the Nox handle SDK and
-          gateway. This UI reports the real on-chain grant state; it never invents a number.
-        </p>
 
-        <div class="subsection">
-          <h3><span class="step">1</span> Fund escrow</h3>
-          <p class="hint left">
-            An order is only as good as the escrow behind it. The venue holds encrypted balances
-            directly, so deposit <strong>before</strong> posting &mdash; an unfunded ask settles
-            for zero rather than failing, because a revert would leak the shortfall. Deposit
-            <strong>shares</strong> to post an ask, <strong>cash</strong> to fill one.
-          </p>
-          <form id="depositForm" class="form">
+          <div id="complianceNotice"></div>
+
+          <div class="grid2">
+            <div class="tile">
+              <label>Escrowed cash</label>
+              <div id="cashValue" class="plain">—</div>
+              <div class="row-title">
+                <span id="cashLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
+                <span id="cashStatus" class="status submitted">no handle</span>
+              </div>
+              <div id="cashHandle" class="cipher"></div>
+            </div>
+
+            <div class="tile">
+              <label>Escrowed shares</label>
+              <div id="sharesValue" class="plain">—</div>
+              <div class="row-title">
+                <span id="sharesLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
+                <span id="sharesStatus" class="status submitted">no handle</span>
+              </div>
+              <div id="sharesHandle" class="cipher"></div>
+            </div>
+          </div>
+
+          <div class="subsection">
+            <h3><span class="step">1</span> Fund escrow</h3>
+            <p class="hint left">
+              Deposit <strong>cash</strong> to fill an order, <strong>shares</strong> to post one. An
+              unfunded order settles for zero rather than failing &mdash; reverting would leak the
+              shortfall.
+            </p>
+            <form id="depositForm" class="form">
+              <div class="field">
+                <label for="depositAmount">Amount</label>
+                <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
+              </div>
+              <div class="field">
+                <label for="depositLeg">Leg</label>
+                <select id="depositLeg">
+                  <option value="cash">Cash — to fill</option>
+                  <option value="shares">Shares — to post</option>
+                </select>
+              </div>
+              <button type="submit" class="primary" data-async="deposit">Deposit</button>
+            </form>
+          </div>
+        </section>
+
+        <!-- ================= MARKET — encrypted / public ================= -->
+        <section class="card">
+          <div class="card-head">
+            <h2>Order book</h2>
+            <span class="hint">market data &mdash; dark pre-trade, sizes and prices are ciphertext</span>
+          </div>
+          <div id="book" class="rows">
+            <p class="empty">No orders yet.</p>
+          </div>
+        </section>
+      </main>
+
+      <!-- ================= MAKER ================= -->
+      <main id="viewMaker" class="hidden">
+        <section class="card mine">
+          <div class="card-head">
+            <h2><span class="step">2</span> Post an ask</h2>
+            <span id="lisBadge" class="pill solid">LIS waiver</span>
+          </div>
+
+          <div id="complianceNoticeMaker"></div>
+
+          <form id="postForm" class="form">
             <div class="field">
-              <label for="depositAmount">Amount</label>
-              <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
+              <label for="qty">Quantity</label>
+              <input id="qty" type="number" min="1" step="1" placeholder="50000" required />
             </div>
             <div class="field">
-              <label for="depositLeg">Leg</label>
-              <select id="depositLeg">
-                <option value="cash">Cash (to fill)</option>
-                <option value="shares">Shares (to post)</option>
-              </select>
+              <label for="price">Price <span class="mono">98.7500 → 987500</span></label>
+              <input id="price" type="number" min="1" step="1" placeholder="987500" required />
             </div>
-            <button type="submit" class="primary">Deposit</button>
+            <div class="field">
+              <label for="expiry">Expires in (min)</label>
+              <input id="expiry" type="number" min="1" step="1" value="60" required />
+            </div>
+            <button type="submit" class="primary" data-async="post">Post ask</button>
           </form>
-        </div>
-      </section>
 
-      <!-- ---------------- layer 2 ---------------- -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Confidential wrapper <span class="muted">&middot; layer 2</span></h2>
-          <span class="hint">the custody boundary &mdash; a separate flow, not a prerequisite for trading</span>
-        </div>
-        <div class="grid2">
-          <div class="stat">
-            <label>Unwrapped ACME30 (public ERC-3643)</label>
-            <code id="bondBalance" class="handle">—</code>
-            <span class="pill muted">visible to everyone</span>
+          <p class="note">
+            <strong>Admission at large-in-scale is declared, not enforced.</strong> The contract sets no
+            minimum size &mdash; it cannot, because the quantity is a ciphertext it can never read. The
+            waiver claim is a plaintext declaration the auditor can check against the real encrypted
+            size, exactly like the deferral flag. Detectable, not preventable.
+          </p>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Confidential wrapper <span class="pill muted">layer 2</span></h2>
+            <span class="hint">custody boundary &mdash; a separate flow, not a prerequisite for trading</span>
           </div>
-          <div class="stat">
-            <label>Wrapped balance (confidential)</label>
-            <code id="wrappedHandle" class="handle">—</code>
-            <span id="wrappedState" class="pill muted">no handle yet</span>
+          <div class="grid2">
+            <div class="tile">
+              <label>Unwrapped ACME30</label>
+              <div id="bondBalance" class="plain">—</div>
+              <span class="status public">public ERC-3643</span>
+            </div>
+            <div class="tile">
+              <label>Wrapped balance</label>
+              <div id="wrappedValue" class="plain">—</div>
+              <div class="row-title">
+                <span id="wrappedLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
+                <span id="wrappedStatus" class="status submitted">no handle</span>
+              </div>
+              <div id="wrappedHandle" class="cipher"></div>
+            </div>
           </div>
-        </div>
-        <form id="wrapForm" class="form">
-          <div class="field">
-            <label for="wrapAmount">Amount to wrap</label>
-            <input id="wrapAmount" type="number" min="1" step="any" placeholder="2500" />
+          <form id="wrapForm" class="form">
+            <div class="field">
+              <label for="wrapAmount">Amount to wrap</label>
+              <input id="wrapAmount" type="number" min="1" step="any" placeholder="2500" />
+            </div>
+            <button type="submit" class="primary" data-async="wrap">Approve &amp; wrap</button>
+          </form>
+          <p class="note">
+            <strong>Wrap amounts are public</strong> &mdash; they ride a plaintext ERC-20 transfer.
+            Confidentiality applies between wrapped holders, not at the custody boundary.
+            <br />
+            <strong>Known gap:</strong> venue escrow is not backed by this wrapper &mdash;
+            <span class="mono">depositShares</span> credits a self-declared amount. Documented in the
+            README rather than papered over.
+          </p>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Your orders</h2>
+            <span class="hint">cancel is blocked while a fill is unresolved</span>
           </div>
-          <button type="submit" class="primary">Approve &amp; wrap</button>
-        </form>
-        <p class="note">
-          <strong>Wrap and unwrap amounts are public</strong> &mdash; they ride a plaintext ERC-20
-          transfer. Confidentiality applies to balances and transfers <em>between</em> wrapped
-          holders, not to the custody boundary itself. That is true of every ERC-7984 wrapper and
-          is stated in the leak model rather than glossed.
-          <br /><br />
-          <strong>Known gap:</strong> venue escrow is <em>not</em> backed by this wrapper. The
-          venue credits <code>depositShares</code> as a self-declared encrypted amount and never
-          calls the wrapper, so escrow is unbacked. Settlement between parties is still exact;
-          what is missing is the link tying escrow to real custody. Documented in the README, not
-          papered over.
-        </p>
-      </section>
-
-      <!-- ---------------- post ---------------- -->
-      <section class="card">
-        <div class="card-head">
-          <h2><span class="step">2</span> Post an ask</h2>
-          <span class="hint">minimum size is set at LIS — the book is dark under a waiver that is not subject to the volume cap</span>
-        </div>
-        <form id="postForm" class="form">
-          <div class="field">
-            <label for="qty">Quantity</label>
-            <input id="qty" type="number" min="1" step="1" placeholder="50000" required />
+          <div id="myOrders" class="rows">
+            <p class="empty">You have no orders.</p>
           </div>
-          <div class="field">
-            <label for="price">Price <span class="muted">(98.7500 → 987500)</span></label>
-            <input id="price" type="number" min="1" step="1" placeholder="987500" required />
+        </section>
+      </main>
+
+      <!-- ================= AUDITOR ================= -->
+      <main id="viewAuditor" class="hidden">
+        <section class="card">
+          <div class="card-head">
+            <h2>Regulator</h2>
+            <span class="hint">what the auditor decrypts, against what the public can see right now</span>
           </div>
-          <div class="field">
-            <label for="expiry">Expires in (minutes)</label>
-            <input id="expiry" type="number" min="1" step="1" value="60" required />
+          <p class="note" id="auditorIdentity"></p>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Fill volumes</h2>
+            <span class="hint">granted at the moment of the fill &mdash; before the public deferral elapses</span>
           </div>
-          <button type="submit" class="primary">Post ask</button>
-        </form>
-      </section>
+          <div id="auditorFills" class="rows">
+            <p class="empty">No fills yet.</p>
+          </div>
+        </section>
 
-      <!-- ---------------- book ---------------- -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Order book</h2>
-          <span class="hint">dark pre-trade: sizes and prices are handles, not numbers</span>
-        </div>
-        <div id="book" class="rows">
-          <p class="empty">No orders yet.</p>
-        </div>
-      </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>Unreported fills</h2>
+            <span class="hint">settled trades with no print submitted</span>
+          </div>
+          <div id="auditorUnreported" class="rows">
+            <p class="empty">Every settled fill has been reported.</p>
+          </div>
+          <p class="note">
+            Reporting is an obligation on the maker, as in the real regime &mdash; the contract cannot
+            compel it. A missing print is <strong>detectable, not preventable</strong>: the auditor has
+            held the quantity handle since the fill.
+          </p>
+        </section>
 
-      <!-- ---------------- tape ---------------- -->
-      <section class="card">
-        <div class="card-head">
-          <h2>The tape</h2>
-          <span class="hint">price prints at settlement &middot; volume prints on the deferral schedule</span>
-        </div>
-        <div id="tape" class="rows">
-          <p class="empty">No prints yet.</p>
-        </div>
-        <p class="caption">
-          Deferral compressed to <strong id="deferralSeconds">90</strong> seconds for the demo.
-          The real regime defers non-equity volume to the end of the following quarter.
-        </p>
-        <p class="note">
-          <strong>notional = qty &times; price / <span id="priceScale">10000</span></strong> &mdash;
-          bonds quote 98.7500 as 987500. A print with a published price and a withheld volume is
-          the regime working: the deferral flag itself is public, exactly as under MiFIR, so
-          declaring a fill large-in-scale announces that it was large without revealing how large.
-        </p>
-      </section>
-    </main>
-
-    <!-- ---------------- auditor route ---------------- -->
-    <main id="viewAuditor" class="hidden">
-      <section class="card">
-        <div class="card-head">
-          <h2>Regulator</h2>
-          <span class="hint">what the auditor can decrypt, against what the public can currently see</span>
-        </div>
-        <p class="note" id="auditorIdentity">
-          Connect as the auditor address to decrypt. Anyone may open this view — but only the
-          auditor holds the grants, so for anyone else the left column stays sealed. That is the
-          point: the gap below is enforced by the protocol, not by this page.
-        </p>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Fill volumes</h2>
-          <span class="hint">granted to the auditor at the moment of the fill &mdash; before the public deferral elapses</span>
-        </div>
-        <div id="auditorFills" class="rows">
-          <p class="empty">No fills yet.</p>
-        </div>
-        <p class="caption">
-          The regulator sees the size from block one. The public sees it only after the deferral.
-          Every row where those two columns disagree is the regime doing its job.
-        </p>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Unreported fills</h2>
-          <span class="hint">settled trades with no print submitted</span>
-        </div>
-        <div id="auditorUnreported" class="rows">
-          <p class="empty">Every settled fill has been reported.</p>
-        </div>
-        <p class="note">
-          Reporting is an obligation on the maker, as it is in the real regime &mdash; the contract
-          cannot force it. A missing print is therefore <strong>detectable, not preventable</strong>:
-          the auditor holds the quantity handle from the moment of the fill, so it can see exactly
-          what was never reported.
-        </p>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Holder register</h2>
-          <span class="hint">disclosed by the issuer on request &mdash; not automatic</span>
-        </div>
-        <div id="auditorRegister" class="rows">
-          <p class="empty">Connect a wallet to check register access.</p>
-        </div>
-        <p class="note">
-          Fill volumes are granted automatically; the register is not. It stays sealed until the
-          issuer calls <code>grantRegisterAccess</code> for a named holder. Grants are
-          <strong>permanent</strong> &mdash; Nox has no <code>removeViewer</code> and no persistent
-          <code>disallow</code>. What a grant does not do is follow the holder: the next transfer
-          mints a fresh handle the grantee cannot read. Rotation, not revocation.
-        </p>
-      </section>
-    </main>
+        <section class="card">
+          <div class="card-head">
+            <h2>Holder register</h2>
+            <span class="hint">disclosed by the issuer on request &mdash; not automatic</span>
+          </div>
+          <div id="auditorRegister" class="rows">
+            <p class="empty">Connect to inspect the register.</p>
+          </div>
+          <p class="note">
+            Fill volumes are granted automatically; the register is not. Grants are
+            <strong>permanent</strong> &mdash; Nox has no <span class="mono">removeViewer</span>. What a
+            grant does not do is follow the holder: the next transfer mints a fresh handle the grantee
+            cannot read. Rotation, not revocation.
+          </p>
+        </section>
+      </main>
+    </div>
 
     <footer>
       <p>
-        Grants in Nox are permanent — there is no revocation primitive, and a published price or
-        volume can never be un-published. Amount-gated compliance rules are not enforced on the
-        encrypted path. Both are documented limitations, not oversights; see the README leak model.
+        Grants are permanent and publication cannot be undone. Amount-gated compliance rules are not
+        enforced on the encrypted path. Both are documented limitations &mdash; see the README leak model.
       </p>
     </footer>
+
+    <!-- ================= THE TAPE — always on screen ================= -->
+    <div class="tape-dock">
+      <div class="tape-dock-inner">
+        <div class="tape-dock-head">
+          <h2>The tape</h2>
+          <span class="hint">
+            price prints at settlement &middot; volume prints on the deferral
+            (<span id="deferralSeconds">90</span>s, compressed for demo &mdash; the real regime defers to
+            end of the following quarter)
+          </span>
+        </div>
+        <div id="tape" class="tape-strip">
+          <p class="empty">No prints yet.</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
