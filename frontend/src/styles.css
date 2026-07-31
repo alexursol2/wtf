@@ -1455,6 +1455,104 @@ footer p {
   color: #2a0606;
 }
 
+/* ------------------------------------------------------------ side theming --
+   The active side drives ONE variable, `--side`, set on <html> by the entry
+   terminal. Everything that should agree with the side reads it, so the whole
+   interface turns green on buy and red on sell without any component knowing
+   which side is active. `--side-ink` is the readable text colour on top of it. */
+[data-side="buy"] {
+  --side: var(--ok);
+  --side-ink: #05230f;
+}
+
+[data-side="sell"] {
+  --side: var(--danger);
+  --side-ink: #2a0606;
+}
+
+/* Accent surfaces follow the side. The lime accent stays the brand mark in the
+   topbar; inside the workspace the side colour is the more useful signal. */
+[data-side] .card.terminal {
+  border-color: var(--side);
+  box-shadow: 6px 6px 0 color-mix(in srgb, var(--side) 26%, transparent);
+}
+
+[data-side] .card.mine {
+  border-color: var(--side);
+  box-shadow: 6px 6px 0 color-mix(in srgb, var(--side) 22%, transparent);
+}
+
+[data-side] .seg.on {
+  background: var(--side);
+  border-color: var(--side);
+  color: var(--side-ink);
+}
+
+[data-side] .ghost[aria-expanded="true"] {
+  background: var(--side);
+  border-color: var(--side);
+  color: var(--side-ink);
+}
+
+[data-side] .icon-btn:hover,
+[data-side] .icon-btn[aria-expanded="true"] {
+  background: var(--side);
+  color: var(--side-ink);
+}
+
+[data-side] .entry-note {
+  border-left-color: var(--side);
+}
+
+[data-side] .ticker-label {
+  background: var(--side);
+  color: var(--side-ink);
+}
+
+[data-side] .ticker-label .help,
+[data-side] .tape-unhide {
+  border-color: var(--side-ink);
+  color: var(--side-ink);
+}
+
+[data-side] .progress-bar {
+  background: var(--side);
+}
+
+[data-side] .step,
+[data-side] .pill.solid {
+  background: var(--side);
+  color: var(--side-ink);
+  border-color: var(--side);
+}
+
+[data-side] .mark {
+  background: var(--side);
+}
+
+[data-side] .mark svg {
+  stroke: var(--side-ink);
+}
+
+[data-side] .role-tag {
+  background: var(--side);
+  color: var(--side-ink);
+}
+
+[data-side] .popover,
+[data-side] .modal-card {
+  box-shadow: 8px 8px 0 color-mix(in srgb, var(--side) 30%, transparent);
+}
+
+[data-side] .resizer:hover::before,
+[data-side] .resizer.dragging::before {
+  background: var(--side);
+}
+
+[data-side] .check input {
+  accent-color: var(--side);
+}
+
 .seg-row {
   display: flex;
   gap: 6px;
@@ -1529,16 +1627,112 @@ footer p {
   color: var(--ink);
 }
 
+/* Slider and presets share one line: they are one control, and stacking them
+   made the panel read as two separate decisions. */
+.alloc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .alloc input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent);
-  margin: 0 0 8px;
+  flex: 1;
+  min-width: 60px;
+  accent-color: var(--side, var(--accent));
+  margin: 0;
 }
 
 .alloc-steps {
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  flex: none;
+}
+
+.alloc-steps .seg {
+  padding: 4px 7px;
+}
+
+/* ------------------------------------------------------- reference price -- */
+
+/* The book is dark, so the last public print is the only price anyone can
+   honestly quote. It is a reference, never a quote. */
+.mark-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 11px;
+  border: var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.mark-label {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+
+.mark-price {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--side, var(--ink));
+}
+
+.mark-meta {
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  margin-left: auto;
+}
+
+/* ------------------------------------------------- execution safety guard -- */
+
+.safety {
+  margin: 0 0 12px;
+  padding: 11px 12px;
+  border: 1.5px solid var(--pending);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--pending) 10%, transparent);
+}
+
+.safety-head {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--pending);
+  margin-bottom: 6px;
+}
+
+.safety-body {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.safety-note {
+  margin: 0 0 9px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.safety-fix {
+  width: 100%;
+  padding: 8px;
+  border: 1.5px solid var(--pending);
+  border-radius: var(--r-sm);
+  background: var(--pending);
+  color: #2a1c00;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 /* ------------------------------------------------------ partial fill bars -- */

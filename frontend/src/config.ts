@@ -27,6 +27,9 @@ export const CONFIG = {
   venue: env.VITE_VENUE ?? "",
   sharesWrapper: env.VITE_SHARES_WRAPPER ?? "",
   cashWrapper: env.VITE_CASH_WRAPPER ?? "",
+  /** Plaintext tokens, read to size trades against the wallet rather than escrow. */
+  bondToken: env.VITE_BOND_TOKEN ?? "",
+  cashToken: env.VITE_CASH_TOKEN ?? "",
   expectedChainId: env.VITE_CHAIN_ID ? Number(env.VITE_CHAIN_ID) : undefined,
 };
 

@@ -110,6 +110,15 @@ const state = {
   instrument: INSTRUMENTS[0] as Instrument,
   /** Decrypted escrow, kept so the allocation slider has something to size against. */
   escrow: { cash: null as bigint | null, shares: null as bigint | null },
+  /**
+   * Plaintext wallet balances, in the venue's integer units.
+   *
+   * These are the real ceiling on a trade now that funding is automatic. Both
+   * are public ERC-20/ERC-3643 reads — no ciphertext involved — which is
+   * precisely why they can size a slider when an encrypted escrow balance
+   * cannot always be resolved in time.
+   */
+  wallet: { cash: null as bigint | null, shares: null as bigint | null },
   /** Circuit-breaker support, discovered by feature detection at boot. */
   breaker: { supported: false, paused: false, checked: false },
 };
@@ -364,6 +373,13 @@ function setView(role: Role) {
   el("viewTrader")?.classList.toggle("hidden", role !== "trader");
   el("viewAuditor")?.classList.toggle("hidden", role !== "auditor");
   el("roleTag")?.classList.toggle("hidden", role !== "auditor");
+
+  // The regulator is not a trader, so its ERC-3643 status is noise: the auditor
+  // address is deliberately unregistered and would forever read "Not verified",
+  // which says nothing true about its authority here. Its powers come from being
+  // the address fixed in the contract, not from the investor whitelist.
+  el("complianceChip")?.classList.toggle("hidden", role === "auditor");
+  el("pairSelect")?.classList.toggle("hidden", role === "auditor");
   applyColumnWidths();
   void refresh();
 }
@@ -970,6 +986,7 @@ async function refreshOnce() {
 /** Off-critical-path: decrypt what we can, then re-render. */
 async function enrich() {
   await refreshCompliance();
+  await refreshWalletBalances();
   await refreshPosition();
   await refreshWrapper();
 
@@ -991,6 +1008,43 @@ async function enrich() {
     }
   }
   if (changed) render();
+}
+
+/**
+ * Plaintext wallet balances for both legs.
+ *
+ * Cheap, public reads — no gateway, no signature, no ciphertext. They are what
+ * makes the allocation slider work the instant you connect, instead of waiting
+ * on an encrypted escrow balance to resolve, and what the safety guard measures
+ * a trade against.
+ */
+async function refreshWalletBalances() {
+  if (!state.account) {
+    state.wallet = { cash: null, shares: null };
+    return;
+  }
+  const provider = state.signer ?? readOnlyProvider();
+
+  for (const [leg, address] of [
+    ["shares", CONFIG.bondToken],
+    ["cash", CONFIG.cashToken],
+  ] as const) {
+    if (!address) continue;
+    try {
+      const token = new Contract(address, ERC20_ABI, provider as any);
+      const [raw, decimals] = await Promise.all([
+        token.balanceOf(state.account) as Promise<bigint>,
+        token.decimals() as Promise<bigint>,
+      ]);
+      // The venue counts in whole units; the token carries decimals. Divide so
+      // a slider percentage means the same thing on both sides of the boundary.
+      state.wallet[leg] = raw / 10n ** BigInt(Number(decimals));
+    } catch {
+      state.wallet[leg] = null;
+    }
+  }
+  renderAllocSource();
+  renderSafety();
 }
 
 /** Your own decrypted position — plaintext, accent-framed, not market data. */
@@ -1128,6 +1182,8 @@ function render() {
     renderBook();
     renderMyOrders();
     renderTargetOptions();
+    renderMark();
+    renderSafety();
   }
 }
 
@@ -1181,6 +1237,16 @@ function renderBook() {
     host.innerHTML = `<p class="empty">Loading the public book…</p>`;
     return;
   }
+
+  // Header line: the instrument and its last public print, so the book is not
+  // read without a reference. It is the last PRINT, never a quote — resting
+  // prices in this book are ciphertext.
+  const last = lastPrint();
+  const refEl = el("bookRef");
+  if (refEl)
+    refEl.textContent = last
+      ? `${state.instrument.symbol} · last ${unscale(last.price)}`
+      : `${state.instrument.symbol} · no prints yet`;
 
   const acct = state.account.toLowerCase();
   const filtered = live.filter((o) => {
@@ -1790,8 +1856,80 @@ async function renderRegister() {
 // order entry terminal
 // ---------------------------------------------------------------------------
 
-/** Which escrow leg funds the current side: buys spend cash, sells post shares. */
+/** Which leg funds the current side: buys spend cash, sells post shares. */
 const fundingLeg = (): "cash" | "shares" => (entry.side === "buy" ? "cash" : "shares");
+
+/**
+ * Spendable balance for the current side.
+ *
+ * Wallet FIRST, escrow as the fallback. Funding is automatic now — placing an
+ * order tops escrow up from the wallet if it is short — so the honest ceiling
+ * on a trade is what the wallet holds, not what happens to be pre-deposited.
+ * Escrow is only the ceiling when the wallet balance cannot be read (no token
+ * configured for this instrument).
+ */
+function spendable(): { amount: bigint | null; source: "wallet" | "escrow" | null } {
+  const leg = fundingLeg();
+  const w = state.wallet[leg];
+  if (w !== null) return { amount: w, source: "wallet" };
+  const e = state.escrow[leg];
+  if (e !== null) return { amount: e, source: "escrow" };
+  return { amount: null, source: null };
+}
+
+/**
+ * The last PUBLIC print for this instrument — the only price this venue can
+ * honestly quote.
+ *
+ * The book is dark: every resting price is a ciphertext, so there is no best
+ * bid or offer to show. What does become public is the price leg of a settled
+ * fill, at the moment its maker reports it. That is a reference, and it is
+ * labelled as one; it is not a live quote and it is not a mid.
+ */
+function lastPrint(): { price: bigint; fillId: number } | null {
+  for (let i = fills.length - 1; i >= 0; i--) {
+    const f = fills[i];
+    if (f.pricePublic && f.priceValue !== null) return { price: f.priceValue, fillId: f.id };
+  }
+  return null;
+}
+
+/** Scaled integer → human decimal, e.g. 987500 → "98.7500". */
+function unscale(v: bigint): string {
+  const scale = state.priceScale === 0n ? 10000n : state.priceScale;
+  const whole = v / scale;
+  const frac = (v % scale).toString().padStart(scale.toString().length - 1, "0");
+  return `${whole}.${frac}`;
+}
+
+function renderMark() {
+  const priceEl = el("markPrice");
+  const metaEl = el("markMeta");
+  const hintEl = el("priceHint");
+  if (!priceEl) return;
+
+  const last = lastPrint();
+  const sym = state.instrument.symbol;
+
+  if (!last) {
+    priceEl.textContent = "—";
+    if (metaEl) metaEl.textContent = `${sym} · nothing has printed yet`;
+    if (hintEl) hintEl.textContent = "98.7500 → 987500";
+    return;
+  }
+
+  priceEl.textContent = unscale(last.price);
+  if (metaEl) metaEl.textContent = `${sym} · fill #${last.fillId} · scaled ${fmt(last.price)}`;
+  if (hintEl) hintEl.textContent = `last ${unscale(last.price)} → ${fmt(last.price)}`;
+
+  // Same reference wherever the instrument is named, so no panel quotes a
+  // different number than its neighbour.
+  const ordersRef = el("myOrdersRef");
+  if (ordersRef) ordersRef.textContent = `${sym} · last ${unscale(last.price)}`;
+
+  const bondMark = el("bondMark");
+  if (bondMark) bondMark.textContent = `last print ${unscale(last.price)}`;
+}
 
 function renderAllocSource() {
   const srcEl = el("allocSource");
@@ -1799,61 +1937,151 @@ function renderAllocSource() {
   if (!srcEl) return;
 
   const leg = fundingLeg();
-  const bal = state.escrow[leg];
+  const { amount, source } = spendable();
 
-  if (!state.account) {
-    srcEl.textContent = "connect a wallet";
-    if (noteEl) noteEl.textContent = "";
-    return;
-  }
-  if (bal === null) {
-    srcEl.textContent = `${leg} — encrypted`;
+  if (amount === null) {
+    srcEl.textContent = state.account ? `${leg} — resolving` : `${leg} — not connected`;
     if (noteEl)
-      noteEl.textContent =
-        "Your escrow has not resolved yet, so the slider has nothing to size against. Enter a quantity directly.";
+      noteEl.textContent = state.account
+        ? "Balance has not resolved yet. Enter a quantity directly."
+        : "";
     return;
   }
 
-  srcEl.textContent = `${fmt(bal)} ${leg}`;
+  srcEl.textContent = `${fmt(amount)} ${leg}`;
   if (noteEl)
     noteEl.textContent =
-      entry.side === "buy"
-        ? "Percentage of escrowed cash, converted at your limit price."
-        : "Percentage of escrowed shares.";
+      source === "escrow"
+        ? `Sizing against escrowed ${leg}; no wallet balance is readable for this leg.`
+        : entry.side === "buy"
+          ? "Percentage of your wallet cash, converted at the reference price."
+          : "Percentage of your wallet holding.";
 }
 
-/** Slider/preset → quantity. Buying converts cash to a share count at the limit. */
+/** Slider/preset → quantity. Buying converts cash to a share count at a price. */
 function applyAllocation(pct: number) {
   const qtyEl = el("entryQty") as HTMLInputElement | null;
-  const bal = state.escrow[fundingLeg()];
-  if (!qtyEl || bal === null) {
-    toast("info", "Escrow not resolved", "The percentage needs a decrypted balance to size against.");
+  const { amount } = spendable();
+  if (!qtyEl || amount === null) {
+    toast("info", "Balance not resolved", "The percentage needs a readable balance to size against.");
     return;
   }
 
   if (entry.side === "sell") {
-    qtyEl.value = ((bal * BigInt(pct)) / 100n).toString();
+    qtyEl.value = ((amount * BigInt(pct)) / 100n).toString();
+    renderSafety();
     return;
   }
 
-  // Buying: cash buys qty = cash × SCALE ÷ price. At market the ask is unknown
-  // — it is a ciphertext — so there is no honest conversion to make.
-  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  if (entry.type === "market" || price <= 0n) {
+  // Buying: cash buys qty = cash × SCALE ÷ price. Prefer the typed limit; fall
+  // back to the last public print, which is the only other honest number here.
+  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  const ref = typed > 0n ? typed : (lastPrint()?.price ?? 0n);
+  if (ref <= 0n) {
     toast(
       "info",
-      "Set a limit price first",
-      "Converting cash into a share count needs a price. At market the ask is a ciphertext, so the venue cannot size it for you.",
+      "No price to size against",
+      "Converting cash into a share count needs a price, and nothing has printed yet. Enter a limit price.",
     );
     return;
   }
-  qtyEl.value = (((bal * BigInt(pct)) / 100n) * state.priceScale / price).toString();
+  qtyEl.value = (((amount * BigInt(pct)) / 100n) * state.priceScale / ref).toString();
+  renderSafety();
+}
+
+// ---------------------------------------------------------------------------
+// execution safety guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Buffer applied to a trade so it cannot fail for want of a rounding unit.
+ *
+ * The failure it prevents is silent and specific. `fill` computes
+ * `need = qty × price ÷ PRICE_SCALE` with integer division and gates the trade
+ * on `Nox.transfer`'s success flag, which is just `balance >= need`. Commit
+ * every last unit and any rounding leaves you short — the transfer reports
+ * false, the quantity is selected to zero, and the trade settles for NOTHING
+ * with no revert and no error to read, because a revert would leak the
+ * shortfall. A reverted or zeroed attempt is also where trade parameters can
+ * leak to anyone watching the mempool, which is the MEV exposure this warns
+ * about.
+ */
+const BUFFER_BPS = 50n; // 0.5%
+
+/** What the trade needs in the funding leg, at the price actually being used. */
+function requiredFunding(qty: bigint): bigint {
+  if (entry.side === "sell") return qty;
+  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  const ref = typed > 0n ? typed : (lastPrint()?.price ?? 0n);
+  if (ref <= 0n) return 0n;
+  return (qty * ref) / state.priceScale;
+}
+
+const withBuffer = (amount: bigint): bigint => amount + (amount * BUFFER_BPS) / 10_000n;
+
+/**
+ * Warns when a trade leaves no room for execution overhead.
+ *
+ * Non-blocking on purpose: it never disables the submit button. The user may
+ * have a reason, and a guard that refuses is a guard people route around.
+ */
+function renderSafety() {
+  const box = el("safetyWarning");
+  const note = el("fundingNote");
+  if (!box) return;
+
+  const qty = BigInt((el("entryQty") as HTMLInputElement)?.value || "0");
+  const { amount, source } = spendable();
+
+  if (qty <= 0n || amount === null || amount === 0n) {
+    box.classList.add("hidden");
+    if (note) note.textContent = "";
+    return;
+  }
+
+  const need = requiredFunding(qty);
+  if (need <= 0n) {
+    box.classList.add("hidden");
+    if (note) note.textContent = "";
+    return;
+  }
+
+  // Trip when the trade consumes the balance with less than the buffer to spare.
+  box.classList.toggle("hidden", withBuffer(need) <= amount);
+
+  if (note) {
+    const leg = fundingLeg();
+    note.textContent =
+      need > amount
+        ? `This order needs ${fmt(need)} ${leg} and your ${source} holds ${fmt(amount)}. It will be submitted, but an underfunded order settles for zero rather than failing.`
+        : `Commits ${fmt(need)} of ${fmt(amount)} ${leg}. Escrow is topped up automatically when you submit.`;
+  }
+}
+
+/** Shrinks the quantity until the buffer fits. */
+function adjustForBuffer() {
+  const qtyEl = el("entryQty") as HTMLInputElement | null;
+  const qty = BigInt(qtyEl?.value || "0");
+  if (!qtyEl || qty <= 0n) return;
+
+  // Take the buffer off the quantity itself: for a sell the quantity IS the
+  // committed amount, and for a buy the notional is linear in it, so the same
+  // reduction leaves the same proportional headroom either way.
+  const reduced = qty - (qty * BUFFER_BPS) / 10_000n - 1n;
+  qtyEl.value = (reduced > 0n ? reduced : 0n).toString();
+  renderSafety();
+  toast("ok", "Amount adjusted", `Reduced by 0.5% so execution overhead cannot zero the settlement.`);
 }
 
 /** Repaint the terminal for the current side and order type. */
 function renderEntry() {
   const buy = entry.side === "buy";
   const market = entry.type === "market";
+
+  // One attribute repaints everything that should agree with the side. The
+  // alternative — every component checking the side for itself — is how a UI
+  // ends up half green and half red.
+  document.documentElement.dataset.side = entry.side;
 
   el("sideBuy")?.classList.toggle("on", buy);
   el("sideSell")?.classList.toggle("on", !buy);
@@ -1920,8 +2148,18 @@ function renderEntry() {
   const unit = el("qtyUnit");
   if (unit) unit.textContent = state.instrument.symbol;
 
+  const bucketNote = el("bucketNote");
+  if (bucketNote) {
+    const lis = (el("entryBucket") as HTMLSelectElement | null)?.value !== "0";
+    bucketNote.textContent = lis
+      ? `Claims the large-in-scale waiver: price prints at settlement, volume is withheld for ${state.lisDeferral}s. The auditor sees the real size immediately.`
+      : "No waiver claimed: volume becomes public as soon as the maker reports the trade.";
+  }
+
   renderTargetOptions();
   renderAllocSource();
+  renderMark();
+  renderSafety();
 }
 
 /** Open orders the connected account may hit — never its own (self-fill reverts). */
@@ -1951,6 +2189,54 @@ function renderTargetOptions() {
   if (keep && hittable.some((o) => String(o.id) === keep)) sel.value = keep;
 }
 
+/**
+ * Tops escrow up to cover this order, inline, before it is placed.
+ *
+ * This is what replaced the manual "Fund escrow" card. It cannot be replaced by
+ * pulling from the wallet at settlement instead: `postAsk` and `fill` move value
+ * out of `escrowShares` / `escrowCash`, and the venue has no path that touches a
+ * wallet. Escrow is also *where the encrypted balance lives* — a per-trade pull
+ * of an exact amount would publish the trade size on-chain and end the
+ * confidentiality the venue exists to provide.
+ *
+ * So the deposit still happens; it just happens for you, sized to the order,
+ * with the buffer already applied, and only when the existing balance is short.
+ */
+async function ensureFunded(need: bigint): Promise<boolean> {
+  const leg = fundingLeg();
+  const have = state.escrow[leg];
+
+  // A resolved balance that already covers it needs nothing. An UNRESOLVED one
+  // is not treated as zero: depositing on top of an unknown balance is safe
+  // (escrow only ever adds), whereas assuming zero would be inventing a number.
+  if (have !== null && have >= need) return true;
+
+  const shortfall = have === null ? need : need - have;
+  const amount = withBuffer(shortfall);
+
+  const ok = await asyncAction(
+    {
+      button: el("entrySubmit") as HTMLButtonElement,
+      label: `Fund ${leg}`,
+      async: true,
+    },
+    async () => {
+      const enc = await encryptInput(amount, CONFIG.venue);
+      const tx =
+        leg === "cash"
+          ? await state.venue!.depositCash(enc.handle, enc.proof)
+          : await state.venue!.depositShares(enc.handle, enc.proof);
+      return tx.wait();
+    },
+  );
+
+  if (ok === undefined) return false;
+
+  // The deposit minted a fresh handle, so the cached decryption is stale.
+  state.escrow[leg] = null;
+  return true;
+}
+
 async function onEntrySubmit(e: Event) {
   e.preventDefault();
   if (!requireReady()) return;
@@ -1960,6 +2246,10 @@ async function onEntrySubmit(e: Event) {
     toast("error", "Quantity must be positive");
     return;
   }
+
+  // Fund first, in the same flow, so there is no separate deposit step.
+  const need = requiredFunding(qty);
+  if (need > 0n && !(await ensureFunded(need))) return;
 
   if (entry.side === "buy") {
     const target = (el("targetOrder") as HTMLSelectElement)?.value;
@@ -2052,74 +2342,6 @@ function requireReady(): boolean {
     return false;
   }
   return true;
-}
-
-async function onDeposit(e: Event) {
-  e.preventDefault();
-  if (!requireReady()) return;
-
-  const typed = BigInt(($("depositAmount") as HTMLInputElement).value || "0");
-  const leg = ($("depositLeg") as HTMLSelectElement).value as "cash" | "shares";
-  if (typed <= 0n) {
-    toast("error", "Amount must be positive");
-    return;
-  }
-
-  const amount = withBuffer(typed);
-
-  await asyncAction(
-    {
-      button: document.querySelector<HTMLButtonElement>(`[data-async="deposit"]`),
-      label: `Deposit ${leg}`,
-      async: true,
-      onSettled: refresh,
-    },
-    async () => {
-      const enc = await encryptInput(amount, CONFIG.venue);
-      const tx =
-        leg === "cash"
-          ? await state.venue!.depositCash(enc.handle, enc.proof)
-          : await state.venue!.depositShares(enc.handle, enc.proof);
-      return tx.wait();
-    },
-  );
-}
-
-/**
- * Settlement overhead buffer.
- *
- * The failure this prevents is specific and silent. `fill` computes
- * `need = qty × price ÷ PRICE_SCALE` with integer division, then gates the
- * whole trade on `Nox.transfer`'s success flag, which is just
- * `balance >= need`. Fund the exact quantity and any rounding at the price
- * scale leaves you a unit short — at which point the transfer reports false,
- * `qtyOut` is selected to zero, and the fill settles for NOTHING. There is no
- * revert and no error, because a revert would leak the shortfall. So a
- * shortfall looks exactly like a trade that simply did not happen.
- *
- * A few basis points of headroom removes that class of failure entirely, and
- * escrow is withdrawable, so the buffer is not a cost.
- */
-const BUFFER_BPS = 50n; // 0.5%
-
-function withBuffer(amount: bigint): bigint {
-  const on = (el("depositBuffer") as HTMLInputElement | null)?.checked;
-  return on ? amount + (amount * BUFFER_BPS) / 10_000n : amount;
-}
-
-function renderDepositPreview() {
-  const out = el("depositPreview");
-  if (!out) return;
-  const typed = BigInt((el("depositAmount") as HTMLInputElement)?.value || "0");
-  if (typed <= 0n) {
-    out.textContent = "";
-    return;
-  }
-  const total = withBuffer(typed);
-  out.textContent =
-    total === typed
-      ? `Depositing exactly ${fmt(typed)} — no headroom for rounding at settlement.`
-      : `Depositing ${fmt(total)} (${fmt(typed)} + ${fmt(total - typed)} buffer).`;
 }
 
 /**
@@ -2304,7 +2526,6 @@ initTooltips();
 
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("disconnect").addEventListener("click", () => disconnect().catch((e) => banner(e.message, "error")));
-$("depositForm").addEventListener("submit", (e) => void onDeposit(e));
 $("wrapForm").addEventListener("submit", (e) => void onWrap(e));
 $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
 
@@ -2370,9 +2591,15 @@ el("entryGtc")?.addEventListener("change", (e) => {
   if (exp) exp.disabled = entry.gtc;
 });
 
-// --- deposit buffer preview
-el("depositAmount")?.addEventListener("input", renderDepositPreview);
-el("depositBuffer")?.addEventListener("change", renderDepositPreview);
+el("entryBucket")?.addEventListener("change", renderEntry);
+
+// --- execution safety guard: re-evaluate on anything that moves the maths
+el("entryQty")?.addEventListener("input", renderSafety);
+el("entryPrice")?.addEventListener("input", () => {
+  renderSafety();
+  renderMark();
+});
+el("safetyAdjust")?.addEventListener("click", adjustForBuffer);
 
 // --- compliance chip opens the KYC explainer
 $("complianceChip").addEventListener("click", openKyc);
@@ -2501,7 +2728,6 @@ setInterval(() => {
 applyColumnWidths();
 initResizers();
 renderEntry();
-renderDepositPreview();
 setView("trader");
 
 if (!CONFIG.venue) {

@@ -123,7 +123,7 @@
         <div class="card fill mine">
           <div class="card-head">
             <h2>My orders &amp; fills</h2>
-            <span class="hint">cancel blocked while a fill is unresolved</span>
+            <span id="myOrdersRef" class="hint mono"></span>
           </div>
           <div id="myOrders" class="rows">
             <p class="empty">Connect a wallet to see your orders.</p>
@@ -151,8 +151,9 @@
         <div id="bookPanel" class="card fill hidden">
           <div class="card-head">
             <h2>Order book</h2>
-            <span class="hint">dark pre-trade &mdash; sizes and prices are ciphertext</span>
+            <span id="bookRef" class="hint mono"></span>
           </div>
+          <p class="hint left">dark pre-trade &mdash; sizes and prices are ciphertext</p>
           <div id="book" class="rows">
             <p class="empty">Loading the public book…</p>
           </div>
@@ -165,6 +166,14 @@
           <div class="card-head">
             <h2>Order entry</h2>
             <span id="lisBadge" class="pill solid" tabindex="0" data-tip="Minimum order size is set at large-in-scale, the waiver under which this book is dark. DECLARED, not enforced: the contract sets no minimum because the quantity is a ciphertext it can never read. The auditor checks the declaration against the real size.">LIS waiver ⓘ</span>
+          </div>
+
+          <!-- Last public print for this instrument. The book is dark, so this is
+               the only price anyone can honestly quote as a reference. -->
+          <div class="mark-row">
+            <span class="mark-label">Last print</span>
+            <span id="markPrice" class="mark-price">—</span>
+            <span id="markMeta" class="mark-meta"></span>
           </div>
 
           <!-- Side. Buy takes resting liquidity (fill); sell posts it (postAsk). -->
@@ -184,7 +193,10 @@
             <!-- Buy hits a specific resting order: this venue is RFQ, so there
                  is one ask per order rather than an aggregated price level. -->
             <div class="field hidden" id="targetField">
-              <label for="targetOrder">Target order</label>
+              <label for="targetOrder">
+                Target order
+                <span class="help mini" tabindex="0" data-tip="Which resting sell offer you are hitting. This is an RFQ venue, not a matched book: each order is one counterparty's quote, held separately, rather than an aggregated price level. Because size and price are ciphertext you cannot see what you are lifting — you state your bid and your size, and the TEE decides whether they cross. You can only target orders from other makers; the contract rejects a self-fill.">?</span>
+              </label>
               <select id="targetOrder"></select>
             </div>
 
@@ -195,34 +207,59 @@
 
             <div class="alloc">
               <div class="alloc-head">
-                <span class="alloc-label">Allocate from escrow</span>
+                <span class="alloc-label">Allocate from wallet</span>
                 <span id="allocSource" class="alloc-source">—</span>
               </div>
-              <input id="allocRange" type="range" min="0" max="100" step="1" value="0" aria-label="Percentage of escrow" />
-              <div class="alloc-steps">
-                <button class="seg" data-alloc="25" type="button">25%</button>
-                <button class="seg" data-alloc="50" type="button">50%</button>
-                <button class="seg" data-alloc="75" type="button">75%</button>
-                <button class="seg" data-alloc="100" type="button">100%</button>
+              <div class="alloc-row">
+                <input id="allocRange" type="range" min="0" max="100" step="1" value="0" aria-label="Percentage of balance" />
+                <div class="alloc-steps">
+                  <button class="seg" data-alloc="25" type="button">25%</button>
+                  <button class="seg" data-alloc="50" type="button">50%</button>
+                  <button class="seg" data-alloc="75" type="button">75%</button>
+                  <button class="seg" data-alloc="100" type="button">100%</button>
+                </div>
               </div>
               <p id="allocNote" class="micro"></p>
+            </div>
+
+            <!-- Execution Safety Guard. Non-blocking: it warns and offers a fix,
+                 it never refuses the trade. -->
+            <div id="safetyWarning" class="safety hidden" role="alert">
+              <div class="safety-head">Execution safety warning</div>
+              <p class="safety-body">
+                Trading with exact wallet limits runs a high risk of an on-chain reverted
+                transaction. In dark pool environments, reverted transactions can temporarily
+                expose trade parameters to MEV bots. We strongly recommend leaving a ~0.5%
+                buffer for execution fees.
+              </p>
+              <p class="safety-note">
+                The venue takes no extra fees &mdash; this buffer stays in your wallet as network
+                gas protection.
+              </p>
+              <button id="safetyAdjust" class="safety-fix" type="button">
+                Adjust amount for recommended buffer
+              </button>
             </div>
 
             <div class="field">
               <label for="entryPrice">
                 <span id="priceLabel">Limit price</span>
-                <span class="mono">98.7500 → 987500</span>
+                <span id="priceHint" class="mono"></span>
               </label>
               <input id="entryPrice" type="number" min="1" step="1" placeholder="987500" required />
               <p id="priceNote" class="micro hidden">Executes against best available dark liquidity.</p>
             </div>
 
             <div class="field" id="bucketField">
-              <label for="entryBucket">Disclosure bucket</label>
+              <label for="entryBucket">
+                Disclosure bucket
+                <span class="help mini" tabindex="0" data-tip="Which MiFIR post-trade deferral this trade claims. Large in scale: the size clears the waiver threshold, so the volume print is DEFERRED (90s here; the real regime defers to end of the following quarter) while the price still prints at settlement. Standard: no waiver, so volume becomes public as soon as the trade is reported. The contract cannot verify the claim — the quantity is a ciphertext it can never read — so this is a DECLARATION. The auditor holds the real volume from the moment of the fill and checks the declaration against it.">?</span>
+              </label>
               <select id="entryBucket">
-                <option value="1">Large in scale — deferred volume</option>
-                <option value="0">Standard — immediate volume</option>
+                <option value="1">Large in scale — volume deferred 90s</option>
+                <option value="0">Standard — volume public on report</option>
               </select>
+              <p id="bucketNote" class="micro"></p>
             </div>
 
             <div class="field" id="expiryField">
@@ -234,64 +271,36 @@
               </label>
             </div>
 
+            <p id="fundingNote" class="micro"></p>
+
             <button id="entrySubmit" type="submit" class="primary submit-sell" data-async="entry">Post sell offer</button>
           </form>
         </div>
       </section>
 
-      <!-- ---------- Column 3: wrapper + escrow management ---------- -->
+      <!-- ---------- Column 3: confidential wrapper ----------
+           The manual "Escrow management" card that used to sit here is gone.
+           Funding is now automatic: placing an order tops escrow up inline if
+           it is short, so there is no separate deposit step to remember. -->
       <section class="col" id="colSide">
-        <div class="card">
-          <div class="card-head">
-            <h2>Escrow management</h2>
-            <span
-              class="help"
-              tabindex="0"
-              data-tip="Cash funds the buy side, shares fund the sell side. An underfunded order settles for zero rather than reverting — reverting would leak the shortfall to anyone watching."
-            >?</span>
-          </div>
-          <form id="depositForm" class="form">
-            <div class="field">
-              <label for="depositAmount">Amount</label>
-              <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
-            </div>
-            <div class="field">
-              <label for="depositLeg">Leg</label>
-              <select id="depositLeg">
-                <option value="cash">Cash — funds buys</option>
-                <option value="shares">Shares — funds sells</option>
-              </select>
-            </div>
-            <label class="check">
-              <input id="depositBuffer" type="checkbox" checked />
-              <span
-                tabindex="0"
-                data-tip="Settlement is branchless: if escrow is even one unit short of quantity × price ÷ 1e4, the transfer's success flag is false and the whole fill settles for zero — with no revert and no error to read. A small buffer absorbs rounding at the price scale so an exact-amount deposit cannot silently zero out."
-                >Fund recommended (+0.5% buffer) ⓘ</span
-              >
-            </label>
-            <p id="depositPreview" class="micro"></p>
-            <button type="submit" class="primary" data-async="deposit">Deposit</button>
-          </form>
-        </div>
-
         <div class="card">
           <div class="card-head">
             <h2>Confidential wrapper</h2>
             <span
               class="help"
               tabindex="0"
-              data-tip="Layer 2 custody boundary — plaintext bonds in, encrypted balance out. A separate flow, not a prerequisite for trading. Wrap amounts are public; confidentiality applies between wrapped holders."
+              data-tip="Layer 2 custody boundary — plaintext holdings in, encrypted balance out. Hiding a balance is a separate act from trading, and not a prerequisite for it. The amount you hide is public at the moment you hide it; what stays confidential is the balance afterwards, between wrapped holders."
             >?</span>
           </div>
           <div class="grid2">
             <div class="tile">
-              <label>Unwrapped <span id="bondSymbol">ACME30</span></label>
+              <label>Visible <span id="bondSymbol">ACME30</span></label>
               <div id="bondBalance" class="plain">—</div>
               <span class="status public">public ERC-3643</span>
+              <div id="bondMark" class="micro"></div>
             </div>
             <div class="tile">
-              <label>Wrapped balance</label>
+              <label>Hidden balance</label>
               <div id="wrappedValue" class="plain">—</div>
               <div class="row-title">
                 <span id="wrappedLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
@@ -302,10 +311,10 @@
           </div>
           <form id="wrapForm" class="form">
             <div class="field">
-              <label for="wrapAmount">Amount to wrap</label>
+              <label for="wrapAmount">Amount to hide</label>
               <input id="wrapAmount" type="number" min="1" step="any" placeholder="2500" />
             </div>
-            <button type="submit" class="primary" data-async="wrap">Approve &amp; wrap</button>
+            <button type="submit" class="primary" data-async="wrap">Approve &amp; hide</button>
           </form>
           <p class="note">
             <strong>Known gap:</strong> venue escrow is not backed by this wrapper &mdash;
