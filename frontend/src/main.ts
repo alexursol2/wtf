@@ -37,7 +37,13 @@ import {
 } from "@iexec-nox/handle";
 import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
-import { INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
+import {
+  INSTRUMENTS,
+  SEEDED_ORDER_INSTRUMENT,
+  countryName,
+  pairLabel,
+  type Instrument,
+} from "./reference.js";
 import { clearHandleStorage, persistentHandleStorage } from "./handleStorage.js";
 import { initTooltips } from "./tooltip.js";
 import {
@@ -149,11 +155,17 @@ type OrderType = "limit" | "market";
 const entry = {
   side: "sell" as Side,
   type: "limit" as OrderType,
-  gtc: false,
 };
 
-/** GTC has no "never" on-chain — expiry is a uint64 the contract compares to
- *  block.timestamp — so it is expressed as a date far past any demo horizon. */
+/**
+ * Orders rest until cancelled, like any ordinary exchange.
+ *
+ * `expiry` is a required uint64 the contract compares against block.timestamp,
+ * so "no expiry" has to be expressed as a date past any horizon that matters
+ * rather than omitted. Asking a trader for a lifetime was answering a question
+ * the contract forces on us, not one they had — an unfilled order is cancelled,
+ * not waited out.
+ */
 const GTC_EXPIRY = 4_102_444_800n; // 2100-01-01Z
 
 /** A market buy must cross an unknown, encrypted ask. uint256 headroom is
@@ -858,9 +870,16 @@ function rememberOrderInstrument(id: number, symbol: string) {
   );
 }
 
-/** True when an order should appear under the selected instrument. */
+/**
+ * True when an order should appear under the selected instrument.
+ *
+ * Three sources, most specific first: what this browser posted, what the seeding
+ * script posted (shipped in reference.ts, so it is right everywhere), and
+ * finally the first instrument — correct for the original orders, which predate
+ * the other two instruments existing.
+ */
 function matchesInstrument(id: number): boolean {
-  const tag = orderInstrument.get(id) ?? INSTRUMENTS[0].symbol;
+  const tag = orderInstrument.get(id) ?? SEEDED_ORDER_INSTRUMENT[id] ?? INSTRUMENTS[0].symbol;
   return tag === state.instrument.symbol;
 }
 
@@ -1395,9 +1414,13 @@ function renderMyOrders() {
     host.innerHTML = `<p class="empty">Connect a wallet to see your orders.</p>`;
     return;
   }
-  const mine = orders.filter((o) => o.maker.toLowerCase() === state.account.toLowerCase());
+  // Scoped to the selected instrument, like the book beside it — a blotter that
+  // mixed pairs would not match the column it sits next to.
+  const mine = orders.filter(
+    (o) => o.maker.toLowerCase() === state.account.toLowerCase() && matchesInstrument(o.id),
+  );
   if (!mine.length) {
-    host.innerHTML = `<p class="empty">You have no orders.</p>`;
+    host.innerHTML = `<p class="empty">No ${escapeHtml(state.instrument.symbol)} orders of yours.</p>`;
     return;
   }
 
@@ -1622,10 +1645,99 @@ async function renderAuditor() {
            not this page.`;
   }
 
+  const session = el("regSession");
+  if (session) {
+    session.className = isAuditor ? "pill ok" : state.account ? "pill bad" : "pill muted";
+    session.textContent = isAuditor
+      ? "regulator session"
+      : state.account
+        ? "not the regulator"
+        : "read-only";
+  }
+
+  renderExecuted(isAuditor);
   renderAuditorFills(isAuditor);
   renderUnreported();
   void refreshBreaker();
   await renderRegister();
+}
+
+/**
+ * Every trade that has settled, newest first — the regulator's execution blotter.
+ *
+ * Distinct from the volumes panel below, which is about the disclosure GAP. This
+ * one answers "what has actually traded": counterparties, instrument, price once
+ * it has printed, and where each trade sits on its deferral schedule. A trade
+ * appears here the moment it settles, whether or not anyone has reported it.
+ */
+function renderExecuted(isAuditor: boolean) {
+  const host = el("auditorExecuted");
+  const summary = el("execSummary");
+  if (!host) return;
+
+  if (!fills.length) {
+    host.innerHTML = `<p class="empty">No trades have settled yet.</p>`;
+    if (summary) summary.textContent = "";
+    return;
+  }
+
+  const reported = fills.filter((f) => f.reported).length;
+  const published = fills.filter((f) => f.volumePublished).length;
+  if (summary)
+    summary.textContent = `${fills.length} settled · ${reported} reported · ${published} volume published`;
+
+  const now = BigInt(Math.floor(Date.now() / 1000));
+
+  host.innerHTML = [...fills]
+    .reverse()
+    .map((f) => {
+      const lis = f.bucket === Bucket.LargeInScale;
+      const symbol =
+        orderInstrument.get(f.id) ?? SEEDED_ORDER_INSTRUMENT[f.id] ?? INSTRUMENTS[0].symbol;
+
+      const price =
+        f.pricePublic && f.priceValue !== null
+          ? `<strong class="mono">${unscale(f.priceValue)}</strong>`
+          : `<span class="cipher">price sealed</span>`;
+
+      const size = decrypted.has(f.qty)
+        ? `<strong class="mono">${fmt(decrypted.get(f.qty)!)}</strong>`
+        : isAuditor
+          ? `<button class="small" data-reveal="${f.id}">Reveal size</button>`
+          : `<span class="cipher">requires the regulator's grant</span>`;
+
+      // Where this trade sits on its schedule, in plain words.
+      let schedule: string;
+      if (!f.reported) schedule = statusChip("failed", "never reported");
+      else if (f.volumePublished) schedule = statusChip("confirmed", "fully public");
+      else if (now >= f.deferredUntil) schedule = statusChip("computing", "due for publication");
+      else
+        schedule = statusChip(
+          "submitted",
+          `hidden ${mmss(Number(f.deferredUntil - now))}`,
+        );
+
+      return `
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title">
+            <strong>trade #${f.id}</strong>
+            <span class="pill muted">${escapeHtml(symbol)}</span>
+            <span class="pill ${lis ? "warn" : "muted"}">${lis ? "deferred" : "immediate"}</span>
+            ${schedule}
+          </div>
+          <div class="row-meta">
+            <span>price ${price}</span>
+            <span>size ${size}</span>
+          </div>
+          <div class="row-meta">
+            <span>seller ${escapeHtml(shortAddr(f.maker))}</span>
+            <span>buyer ${escapeHtml(shortAddr(f.taker))}</span>
+          </div>
+        </div>
+      </div>`;
+    })
+    .join("");
 }
 
 function renderAuditorFills(isAuditor: boolean) {
@@ -1927,6 +2039,25 @@ async function renderRegister() {
 // order entry terminal
 // ---------------------------------------------------------------------------
 
+type Visibility = "immediate" | "lis" | "never";
+
+/**
+ * How this trade's size reaches the public tape.
+ *
+ * Only two of the three are an on-chain PARAMETER: `fill` takes a bucket, and
+ * the contract turns it into `now` or `now + LIS_DEFERRAL`. Arbitrary delays are
+ * not available — the schedule is fixed in the contract, not chosen per trade.
+ *
+ * "Never" is not a bucket at all. Publication requires the maker to call
+ * `reportTrade`, and nothing compels them; skipping it means the size is never
+ * published. That is a real and deliberately reachable state — it is exactly
+ * what the regulator's unreported list exists to catch — so it is offered
+ * honestly rather than dressed up as a timer.
+ */
+function visibilityChoice(): Visibility {
+  return ((el("entryBucket") as HTMLSelectElement | null)?.value as Visibility) ?? "lis";
+}
+
 /** Which leg funds the current side: buys spend cash, sells post shares. */
 const fundingLeg = (): "cash" | "shares" => (entry.side === "buy" ? "cash" : "shares");
 
@@ -2006,9 +2137,12 @@ function renderMark() {
 
   if (labelEl) labelEl.textContent = kind;
   priceEl.textContent = unscale(price);
+  // The PRICE is public once reported, so quoting it is fine. Naming the fill it
+  // came from is not: it would tie a published number back to one pair of
+  // counterparties, which is more than the tape discloses.
   if (metaEl)
     metaEl.textContent = last
-      ? `${sym} · fill #${last.fillId} · scaled ${fmt(price)}`
+      ? `${sym} · last traded · scaled ${fmt(price)}`
       : `${sym} · reference level, nothing has printed yet`;
   if (hintEl) hintEl.textContent = `${unscale(price)} → ${fmt(price)}`;
 
@@ -2158,6 +2292,47 @@ function renderSafety() {
   }
 }
 
+/**
+ * Quantity and notional are two views of one decision, so editing either
+ * derives the other at the working price.
+ *
+ * `notional = qty × price ÷ 1e4` is the contract's own arithmetic, so the amount
+ * shown is what settlement will actually move rather than an approximation.
+ * The guard prevents the two handlers ping-ponging: writing one input fires its
+ * sibling's `input` event in some browsers.
+ */
+let syncingAmounts = false;
+
+function syncFromQty() {
+  if (syncingAmounts) return;
+  const qty = BigInt((el("entryQty") as HTMLInputElement)?.value || "0");
+  const price = workingPrice();
+  const out = el("entryNotional") as HTMLInputElement | null;
+  if (!out || price <= 0n) return;
+  syncingAmounts = true;
+  out.value = qty > 0n ? ((qty * price) / state.priceScale).toString() : "";
+  syncingAmounts = false;
+  renderSafety();
+}
+
+function syncFromNotional() {
+  if (syncingAmounts) return;
+  const notional = BigInt((el("entryNotional") as HTMLInputElement)?.value || "0");
+  const price = workingPrice();
+  const out = el("entryQty") as HTMLInputElement | null;
+  if (!out || price <= 0n) return;
+  syncingAmounts = true;
+  out.value = notional > 0n ? ((notional * state.priceScale) / price).toString() : "";
+  syncingAmounts = false;
+  renderSafety();
+}
+
+/** The price the form is working at: the typed limit, else the reference. */
+function workingPrice(): bigint {
+  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  return typed > 0n ? typed : referencePrice();
+}
+
 /** Shrinks the quantity until the buffer fits. */
 function adjustForBuffer() {
   const qtyEl = el("entryQty") as HTMLInputElement | null;
@@ -2192,24 +2367,10 @@ function renderEntry() {
     .querySelectorAll<HTMLElement>("[data-ordertype]")
     .forEach((n) => n.classList.toggle("on", n.dataset.ordertype === entry.type));
 
-  // Buy hits one resting order; sell creates one, so the target picker swaps in.
-  el("targetField")?.classList.toggle("hidden", !buy);
-
-  // Time in force applies to BOTH sides, but means different things, so the
-  // label and the note change rather than the control disappearing. On a sell
-  // it is how long the order rests. On a buy the fill is atomic — there is
-  // nothing to rest — so it is a deadline on the attempt itself: past it the
-  // contract rejects with "expired", which is the protection against a
-  // signed-but-unbroadcast fill landing at a price you no longer want.
-  el("expiryField")?.classList.remove("hidden");
-  el("gtcWrap")?.classList.toggle("hidden", buy);
-  const tifLabel = el("tifLabel");
-  if (tifLabel) tifLabel.textContent = buy ? "Valid for (min)" : "Time in force (min)";
-  const tifNote = el("tifNote");
-  if (tifNote)
-    tifNote.textContent = buy
-      ? "How long this attempt stays valid. The order you hit must still be unexpired when the transaction lands."
-      : "How long your offer rests on the book before it expires.";
+  // The visibility choice belongs to whoever creates the trade record. On a buy
+  // that is you (fill declares the bucket); on a sell the taker declares it, so
+  // it is not yours to set.
+  el("bucketField")?.classList.toggle("hidden", !buy);
 
   const priceEl = el("entryPrice") as HTMLInputElement | null;
   const priceLabel = el("priceLabel");
@@ -2261,13 +2422,19 @@ function renderEntry() {
 
   const unit = el("qtyUnit");
   if (unit) unit.textContent = state.instrument.symbol;
+  const nUnit = el("notionalUnit");
+  if (nUnit) nUnit.textContent = state.instrument.quote;
 
   const bucketNote = el("bucketNote");
   if (bucketNote) {
-    const lis = (el("entryBucket") as HTMLSelectElement | null)?.value !== "0";
-    bucketNote.textContent = lis
-      ? `Price prints at settlement; the size stays off the public tape for ${state.lisDeferral}s. The regulator sees the real size immediately either way.`
-      : "The size becomes public as soon as the trade is reported.";
+    const mins = (Number(state.lisDeferral) / 60).toFixed(1).replace(/\.0$/, "");
+    bucketNote.textContent =
+      {
+        immediate: "The size becomes public as soon as the trade is reported.",
+        lis: `Price prints at settlement; the size stays off the public tape for ${mins} min. The regulator sees the real size immediately either way.`,
+        never:
+          "Nothing is reported, so the size never reaches the public tape. The regulator still holds it, and the trade shows in their unreported list — undisclosed, not undetected.",
+      }[visibilityChoice()] ?? "";
   }
 
   renderTargetOptions();
@@ -2276,31 +2443,59 @@ function renderEntry() {
   renderSafety();
 }
 
-/** Open orders the connected account may hit — never its own (self-fill reverts). */
-function renderTargetOptions() {
-  const sel = el("targetOrder") as HTMLSelectElement | null;
-  if (!sel) return;
-
+/**
+ * Orders the connected account may hit, for the selected instrument.
+ *
+ * Excludes its own: `fill` rejects a self-fill outright, because with maker ==
+ * taker both sides of the cash transfer resolve to one storage slot.
+ */
+function hittableOrders(): OrderRow[] {
   const now = BigInt(Math.floor(Date.now() / 1000));
   const acct = state.account.toLowerCase();
-  const hittable = orders.filter(
+  return orders.filter(
     (o) =>
       o.stateCode === OrderState.Open &&
       o.expiry > now &&
+      matchesInstrument(o.id) &&
       (!acct || o.maker.toLowerCase() !== acct),
   );
+}
 
-  const keep = sel.value;
-  sel.innerHTML = hittable.length
-    ? hittable
-        .reverse()
-        .map(
-          (o) =>
-            `<option value="${o.id}">#${o.id} · maker ${escapeHtml(shortAddr(o.maker))} · size sealed</option>`,
-        )
-        .join("")
-    : `<option value="">No resting orders you can hit</option>`;
-  if (keep && hittable.some((o) => String(o.id) === keep)) sel.value = keep;
+/**
+ * Picks which resting order a buy lifts, without asking.
+ *
+ * Choosing a counterparty is an artefact of this venue being RFQ — each order
+ * is one dealer's quote rather than a level in an aggregated book — and it is
+ * not a decision a trader can make informedly anyway: sizes and prices are
+ * ciphertext, so every option looks identical. The oldest hittable order is
+ * taken first, which is the price-time priority any exchange would apply if it
+ * could read the prices.
+ */
+function pickTarget(): OrderRow | null {
+  const hittable = hittableOrders();
+  if (!hittable.length) return null;
+  return hittable.reduce((a, b) => (a.id <= b.id ? a : b));
+}
+
+/** Keeps the hidden select in sync, so the submit path has an id to read. */
+function renderTargetOptions() {
+  const sel = el("targetOrder") as HTMLSelectElement | null;
+  if (!sel) return;
+  const hittable = hittableOrders();
+  sel.innerHTML = hittable.map((o) => `<option value="${o.id}">#${o.id}</option>`).join("");
+  const chosen = pickTarget();
+  if (chosen) sel.value = String(chosen.id);
+
+  // The terminal says whether there IS liquidity, without naming the order.
+  const note = el("liquidityNote");
+  if (note) {
+    note.textContent =
+      entry.side === "buy"
+        ? hittable.length
+          ? `${hittable.length} resting offer${hittable.length === 1 ? "" : "s"} in ${state.instrument.symbol}. Sizes and prices are sealed until settlement.`
+          : `No resting offers in ${state.instrument.symbol} right now.`
+        : "";
+  }
 }
 
 /**
@@ -2366,12 +2561,20 @@ async function onEntrySubmit(e: Event) {
   if (need > 0n && !(await ensureFunded(need))) return;
 
   if (entry.side === "buy") {
-    const target = (el("targetOrder") as HTMLSelectElement)?.value;
-    if (!target) {
-      toast("error", "No order selected", "A buy takes liquidity, so it needs a resting order to hit.");
+    const chosen = pickTarget();
+    if (!chosen) {
+      toast(
+        "error",
+        "No resting liquidity",
+        `Nothing is currently offered in ${state.instrument.symbol} that you can lift.`,
+      );
       return;
     }
-    const bucket = Number((el("entryBucket") as HTMLSelectElement)?.value ?? Bucket.LargeInScale);
+    const target = String(chosen.id);
+    // "never" still settles under the LIS bucket; what makes it never public is
+    // that reportTrade is never called.
+    const bucket =
+      visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
 
     let bid: bigint;
     if (entry.type === "market") {
@@ -2413,10 +2616,8 @@ async function onEntrySubmit(e: Event) {
     return;
   }
 
-  const expiry = entry.gtc
-    ? GTC_EXPIRY
-    : BigInt(Math.floor(Date.now() / 1000)) +
-      BigInt((el("entryExpiry") as HTMLInputElement)?.value || "60") * 60n;
+  // Offers rest until cancelled. See GTC_EXPIRY for why a date is still needed.
+  const expiry = GTC_EXPIRY;
 
   await asyncAction(
     { button: el("entrySubmit") as HTMLButtonElement, label: "Post sell offer", async: true, onSettled: refresh },
@@ -2766,23 +2967,24 @@ document.querySelectorAll<HTMLElement>("[data-alloc]").forEach((b) =>
   }),
 );
 
-el("allocRange")?.addEventListener("input", (e) =>
-  applyAllocation(Number((e.target as HTMLInputElement).value)),
-);
-
-el("entryGtc")?.addEventListener("change", (e) => {
-  entry.gtc = (e.target as HTMLInputElement).checked;
-  const exp = el("entryExpiry") as HTMLInputElement | null;
-  if (exp) exp.disabled = entry.gtc;
+el("allocRange")?.addEventListener("input", (e) => {
+  const pct = Number((e.target as HTMLInputElement).value);
+  const out = el("allocPct");
+  if (out) out.textContent = `${pct}%`;
+  applyAllocation(pct);
 });
 
 el("entryBucket")?.addEventListener("change", renderEntry);
 
+// Quantity and amount are two views of one number — editing either derives the
+// other at the working price.
+el("entryQty")?.addEventListener("input", syncFromQty);
+el("entryNotional")?.addEventListener("input", syncFromNotional);
+
 // --- execution safety guard: re-evaluate on anything that moves the maths
-el("entryQty")?.addEventListener("input", renderSafety);
 el("entryPrice")?.addEventListener("input", () => {
+  syncFromQty();
   renderSafety();
-  renderMark();
 });
 el("safetyAdjust")?.addEventListener("click", adjustForBuffer);
 

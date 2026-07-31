@@ -130,3 +130,23 @@ export const INSTRUMENTS: Instrument[] = [
 ];
 
 export const pairLabel = (i: Instrument) => `${i.symbol} / ${i.quote}`;
+
+/**
+ * Instrument of each on-chain order, for orders this project posted itself.
+ *
+ * `DeferralVenue.Order` has no instrument field, so the chain cannot answer
+ * this. These ids were assigned by scripts/seed-instrument-orders.ts, which
+ * knew what it was posting — so the mapping is fact, not inference, and shipping
+ * it here means the AAPL and TSLA books look right in ANY browser rather than
+ * only the one that placed them.
+ *
+ * Orders absent from this map fall back to the first instrument, which is
+ * correct for ids 0–5: they predate the other two instruments existing.
+ */
+export const SEEDED_ORDER_INSTRUMENT: Record<number, string> = {
+  6: "AAPL.rwa",
+  7: "AAPL.rwa",
+  8: "AAPL.rwa",
+  9: "TSLA.rwa",
+  10: "TSLA.rwa",
+};

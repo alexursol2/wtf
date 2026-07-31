@@ -24,5 +24,13 @@
       "wrapper": "0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b",
       "deployedAt": "2026-07-31T19:25:12.657Z"
     }
-  }
+  },
+  "orderInstruments": {
+    "6": "AAPL.rwa",
+    "7": "AAPL.rwa",
+    "8": "AAPL.rwa",
+    "9": "TSLA.rwa",
+    "10": "TSLA.rwa"
+  },
+  "seededAt": "2026-07-31T20:32:09.748Z"
 }

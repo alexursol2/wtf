@@ -1200,19 +1200,9 @@ footer p {
   stroke-linejoin: round;
 }
 
-/* The wallet is the way into your position, so it is the largest control in the
-   bar — double the standard icon button. It only appears once a wallet is
-   connected; with nothing to show, it was a button that opened an empty panel. */
-#walletBtn {
-  width: 68px;
-  height: 68px;
-  border-radius: var(--r-md);
-}
-
-#walletBtn svg {
-  width: 34px;
-  height: 34px;
-}
+/* The wallet button sits at the standard icon size, matching disconnect beside
+   it. It only appears once a wallet is connected; with nothing to show, it was
+   a button that opened an empty panel. */
 
 .icon-btn:hover,
 .icon-btn[aria-expanded="true"] {
@@ -1675,6 +1665,18 @@ footer p {
   overflow-wrap: anywhere;
 }
 
+/* Exact percentage, so the slider is readable rather than approximate. */
+.alloc-pct {
+  flex: none;
+  min-width: 4ch;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--side, var(--ink));
+}
+
 /* ------------------------------------------------------- reference price -- */
 
 /* The book is dark, so the last public print is the only price anyone can
@@ -1838,6 +1840,25 @@ footer p {
 
 .card.admin {
   border-color: var(--danger);
+}
+
+/* The regulator header used to put a long right-aligned hint opposite the title,
+   which wrapped into a ragged two-line block hanging off the right edge. The
+   subtitle is prose, so it gets its own full-width line and reads left-to-right
+   like prose; the chip opposite the title carries the session state instead. */
+.reg-sub {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 70ch;
+}
+
+.reg-head .note {
+  margin-top: 0;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
 }
 
 .admin-state {

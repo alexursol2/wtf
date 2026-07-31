@@ -30,6 +30,11 @@
         <path d="M2.6 12.6 5.1 13l.4-2.5" />
         <path d="M9 5.6V9l2.3 1.4" />
       </symbol>
+      <symbol id="i-exit" viewBox="0 0 18 18">
+        <path d="M7.2 15.2H3.9a1.6 1.6 0 0 1-1.6-1.6V4.4a1.6 1.6 0 0 1 1.6-1.6h3.3" />
+        <path d="M11.6 12.2 15 9l-3.4-3.2" />
+        <path d="M15 9H6.6" />
+      </symbol>
     </svg>
 
     <header class="topbar">
@@ -116,8 +121,14 @@
         </div>
 
         <button id="connect" class="primary">Connect wallet</button>
-        <button id="disconnect" class="hidden small" title="Clear this site's session and return to the public read-only view">
-          Disconnect
+        <button
+          id="disconnect"
+          class="hidden icon-btn"
+          type="button"
+          aria-label="Disconnect"
+          data-tip="Clears this site's session and returns to the public read-only view. A dapp cannot log you out of the wallet itself — only the wallet can."
+        >
+          <svg><use href="#i-exit" /></svg>
         </button>
       </div>
     </header>
@@ -196,21 +207,24 @@
           </div>
 
           <p id="entryExplain" class="entry-note"></p>
+          <p id="liquidityNote" class="micro"></p>
 
           <form id="entryForm" class="form">
-            <!-- Buy hits a specific resting order: this venue is RFQ, so there
-                 is one ask per order rather than an aggregated price level. -->
-            <div class="field hidden" id="targetField">
-              <label for="targetOrder">
-                Target order
-                <span class="help mini" tabindex="0" data-tip="Which resting sell offer you are hitting. This is an RFQ venue, not a matched book: each order is one counterparty's quote, held separately, rather than an aggregated price level. Because size and price are ciphertext you cannot see what you are lifting — you state your bid and your size, and the TEE decides whether they cross. You can only target orders from other makers; the contract rejects a self-fill.">?</span>
-              </label>
-              <select id="targetOrder"></select>
-            </div>
+            <!-- The target order is chosen automatically (see pickTarget). It is
+                 an artefact of the venue being RFQ rather than a decision a
+                 trader should have to make, so it stays off the form. -->
+            <select id="targetOrder" class="sr-only" tabindex="-1" aria-hidden="true"></select>
 
+            <!-- Size and notional on one line: entering either derives the
+                 other, so a trader can work in whichever they think in. -->
             <div class="field">
               <label for="entryQty">Quantity <span id="qtyUnit" class="mono"></span></label>
               <input id="entryQty" type="number" min="1" step="1" placeholder="50000" required />
+            </div>
+
+            <div class="field">
+              <label for="entryNotional">Amount <span id="notionalUnit" class="mono">USD</span></label>
+              <input id="entryNotional" type="number" min="1" step="1" placeholder="4,937,500" />
             </div>
 
             <div class="alloc">
@@ -220,6 +234,7 @@
               </div>
               <div class="alloc-row">
                 <input id="allocRange" type="range" min="0" max="100" step="1" value="0" aria-label="Percentage of balance" />
+                <output id="allocPct" class="alloc-pct" for="allocRange">0%</output>
                 <div class="alloc-steps">
                   <button class="seg" data-alloc="25" type="button">25%</button>
                   <button class="seg" data-alloc="50" type="button">50%</button>
@@ -261,23 +276,14 @@
             <div class="field" id="bucketField">
               <label for="entryBucket">
                 Visibility delay
-                <span class="help mini" tabindex="0" data-tip="How long the size of this trade stays off the public tape. Delayed: the trade qualifies for a large-in-scale waiver, so its price prints at settlement but its size is withheld for 90 seconds (the real regime withholds it far longer). Immediate: no waiver, so the size appears as soon as the trade is reported. Either way the regulator sees the true size straight away — the delay is public disclosure only, never supervisory.">?</span>
+                <span class="help mini" tabindex="0" data-tip="How long the SIZE of this trade stays off the public tape. The price always prints at settlement. The regulator sees the true size immediately in every case — this delays public disclosure, never supervisory disclosure. Because the contract cannot read an encrypted quantity, the waiver claim is a declaration it cannot verify; the auditor checks it against the real size.">?</span>
               </label>
               <select id="entryBucket">
-                <option value="1">Delayed — size hidden for 90s</option>
-                <option value="0">Immediate — size public on report</option>
+                <option value="immediate">Immediate — size public on report</option>
+                <option value="lis" selected>1.5 min — large-in-scale waiver</option>
+                <option value="never">Never — do not publish the size</option>
               </select>
               <p id="bucketNote" class="micro"></p>
-            </div>
-
-            <div class="field" id="expiryField">
-              <label for="entryExpiry"><span id="tifLabel">Time in force (min)</span></label>
-              <input id="entryExpiry" type="number" min="1" step="1" value="60" />
-              <label class="check" id="gtcWrap">
-                <input id="entryGtc" type="checkbox" />
-                <span>Good &rsquo;til cancelled (never expires)</span>
-              </label>
-              <p id="tifNote" class="micro"></p>
             </div>
 
             <p id="fundingNote" class="micro"></p>
@@ -337,12 +343,25 @@
     <!-- ================= AUDITOR — automatic for the regulator address ================= -->
     <main id="viewAuditor" class="workspace hidden">
       <section class="col" id="colAudMain">
-        <div class="card">
+        <div class="card reg-head">
           <div class="card-head">
             <h2>Regulator</h2>
-            <span class="hint">what the auditor decrypts, against what the public can see right now</span>
+            <span id="regSession" class="pill muted">read-only</span>
           </div>
+          <p class="reg-sub">What the auditor decrypts, against what the public can see right now.</p>
           <p class="note" id="auditorIdentity"></p>
+        </div>
+
+        <!-- Every settled trade, in execution order, with what the public can
+             see against what the regulator can. -->
+        <div class="card fill">
+          <div class="card-head">
+            <h2>Executed trades</h2>
+            <span id="execSummary" class="hint mono"></span>
+          </div>
+          <div id="auditorExecuted" class="rows">
+            <p class="empty">No trades have settled yet.</p>
+          </div>
         </div>
 
         <div class="card fill">
