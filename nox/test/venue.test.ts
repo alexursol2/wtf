@@ -12,7 +12,7 @@
  * fills — permanently, since Nox has no un-publish primitive. It is asserted
  * directly against NoxCompute state rather than by reading the source.
  */
-import { describe, it, before, beforeEach } from "node:test";
+import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -27,7 +27,7 @@ import {
 
 const CHAIN_ID = 31337;
 const PRICE_SCALE = 10_000n; // 98.7500 -> 987500
-const LIS_DEFERRAL = 90n; // demo value, matches the contract
+const LIS_DEFERRAL = 3600n; // one hour, matches the contract constant
 /** Instrument index. Plaintext on the order, so the book can be split by pair. */
 const INSTRUMENT = 0;
 
@@ -46,8 +46,7 @@ const ORDER = {
   qtyRemaining: 3,
   cashRemaining: 4,
   price: 5,
-  expiry: 6,
-  state: 7,
+  state: 6,
 } as const;
 
 const FILL = {
@@ -68,8 +67,21 @@ describe("DeferralVenue", () => {
   let registry: any;
   let salt = 1;
 
-  /** Fresh unique input handle + matching gateway proof, bound to `app`. */
-  async function encInput(owner: Hex, app: Hex, teeType: number = TEEType.Uint256) {
+  /**
+   * Fresh unique input handle + matching gateway proof, bound to `app`.
+   *
+   * `createdAt` defaults to the wall clock, which is what a real gateway
+   * stamps. Pass the chain's own timestamp when a test has advanced the clock:
+   * NoxCompute rejects a proof more than proofExpirationDuration (an hour)
+   * behind `block.timestamp`, so a wall-clock stamp on a chain that has jumped
+   * forward is already expired on arrival.
+   */
+  async function encInput(
+    owner: Hex,
+    app: Hex,
+    teeType: number = TEEType.Uint256,
+    createdAt?: bigint,
+  ) {
     const handle = buildHandle(CHAIN_ID, teeType, salt++);
     const proof = await makeInputProof({
       gateway: ctx.gateway,
@@ -77,6 +89,7 @@ describe("DeferralVenue", () => {
       handle,
       owner,
       app,
+      createdAt,
     });
     return { handle, proof };
   }
@@ -95,7 +108,25 @@ describe("DeferralVenue", () => {
     ctx = { viem, provider, networkHelpers, ...boot };
   });
 
+  /**
+   * Clock drift has to be undone between tests, not just state.
+   *
+   * Two tests advance the chain: the LIS deferral (an hour, since the constant
+   * moved from 90s) and the ageing-order one (a year). A Nox input proof carries
+   * a WALL-CLOCK createdAt and NoxCompute rejects any proof older than its
+   * one-hour proofExpirationDuration measured against block.timestamp — so an
+   * hour of drift left behind by one test makes every proof minted afterwards
+   * fail with "Proof expired", in tests that have nothing to do with time.
+   */
+  let snapshot: { restore: () => Promise<void> } | null = null;
+
+  afterEach(async () => {
+    await snapshot?.restore();
+    snapshot = null;
+  });
+
   beforeEach(async () => {
+    snapshot = await ctx.networkHelpers.takeSnapshot();
     const [deployer, maker, taker, auditor] = await ctx.viem.getWalletClients();
     ctx.maker = maker;
     ctx.taker = taker;
@@ -114,27 +145,23 @@ describe("DeferralVenue", () => {
   });
 
   /** maker posts an ask; returns orderId */
-  async function postAsk(expirySeconds = 3600) {
+  async function postAsk() {
     const qty = await encInput(ctx.maker.account.address, venue.address);
     const price = await encInput(ctx.maker.account.address, venue.address);
-    const latest = await ctx.publicClient.getBlock();
-    const expiry = BigInt(latest.timestamp) + BigInt(expirySeconds);
 
-    await venue.write.postAsk([INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof, expiry], {
+    await venue.write.postAsk([INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof], {
       account: ctx.maker.account,
     });
     return 0n;
   }
 
   /** taker posts a resting BID; returns orderId */
-  async function postBid(expirySeconds = 3600) {
+  async function postBid() {
     const qty = await encInput(ctx.taker.account.address, venue.address);
     const price = await encInput(ctx.taker.account.address, venue.address);
-    const latest = await ctx.publicClient.getBlock();
-    const expiry = BigInt(latest.timestamp) + BigInt(expirySeconds);
 
     const id = await venue.read.ordersCount();
-    await venue.write.postBid([INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof, expiry], {
+    await venue.write.postBid([INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof], {
       account: ctx.taker.account,
     });
     return id;
@@ -217,11 +244,26 @@ describe("DeferralVenue", () => {
     assert.equal(await noxRead("isPubliclyDecryptable", [price]), false);
   });
 
-  it("rejects a fill on an expired order", async () => {
+  it("rests indefinitely — an old order is still fillable", async () => {
+    // The venue used to carry a per-order expiry. It is gone, so the ONLY way
+    // an order leaves the book is cancel(). Age must therefore change nothing,
+    // and this asserts it directly rather than trusting that the check was
+    // removed everywhere: a leftover `block.timestamp` comparison anywhere on
+    // the fill path would surface here as a revert.
     await depositBoth();
-    const orderId = await postAsk(60);
-    await ctx.networkHelpers.time.increase(120);
-    await assert.rejects(fill(orderId, 0), /expired/);
+    const orderId = await postAsk();
+    await ctx.networkHelpers.time.increase(365 * 24 * 3600);
+
+    // Proofs are stamped with the chain's clock here, not the wall clock, or
+    // NoxCompute would reject them as expired before the venue is even reached.
+    const now = (await ctx.publicClient.getBlock()).timestamp as bigint;
+    const bid = await encInput(ctx.taker.account.address, venue.address, TEEType.Uint256, now);
+    const qty = await encInput(ctx.taker.account.address, venue.address, TEEType.Uint256, now);
+    await venue.write.fill([orderId, bid.handle, qty.handle, bid.proof, qty.proof, 0], {
+      account: ctx.taker.account,
+    });
+
+    assert.equal(await venue.read.fillsCount(), 1n, "an aged order should still fill");
   });
 
   // ---------------- the security property ----------------
@@ -491,12 +533,10 @@ describe("DeferralVenue", () => {
     // venue must refuse loudly, not settle encrypted trades for zero.
     const qty = await encInput(ctx.maker.account.address, venue.address);
     const price = await encInput(ctx.maker.account.address, venue.address);
-    const latest = await ctx.publicClient.getBlock();
     await assert.rejects(
-      venue.write.postAsk(
-        [INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof, BigInt(latest.timestamp) + 3600n],
-        { account: ctx.maker.account },
-      ),
+      venue.write.postAsk([INSTRUMENT, qty.handle, price.handle, qty.proof, price.proof], {
+        account: ctx.maker.account,
+      }),
       /paused/,
     );
     await assert.rejects(fill(orderId, 0), /paused/);
@@ -638,11 +678,9 @@ describe("DeferralVenue", () => {
 
     const qty = await encInput(ctx.maker.account.address, venue.address);
     const price = await encInput(ctx.maker.account.address, venue.address);
-    const latest = await ctx.publicClient.getBlock();
-    await venue.write.postAsk(
-      [7, qty.handle, price.handle, qty.proof, price.proof, BigInt(latest.timestamp) + 3600n],
-      { account: ctx.maker.account },
-    );
+    await venue.write.postAsk([7, qty.handle, price.handle, qty.proof, price.proof], {
+      account: ctx.maker.account,
+    });
 
     // Which security is quoted is not the secret — the size and price are — so
     // it stays readable, which is the whole reason separate books are possible.

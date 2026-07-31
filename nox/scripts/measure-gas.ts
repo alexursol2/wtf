@@ -14,6 +14,9 @@ import { network } from "hardhat";
 import { bootstrapNoxCompute, makeInputProof, buildHandle, TEEType } from "../lib/nox-local.js";
 import type { Hex } from "viem";
 
+/** Instrument index into the frontend's INSTRUMENTS list. 0 = ACME30. */
+const INSTRUMENT = 0;
+
 const rows: [string, bigint][] = [];
 
 async function main() {
@@ -85,10 +88,9 @@ async function main() {
 
   const q = await enc(maker.account.address, venue.address);
   const p = await enc(maker.account.address, venue.address);
-  const now = (await publicClient.getBlock()).timestamp;
   await track(
     "venue.postAsk",
-    await venue.write.postAsk([q.handle, p.handle, q.proof, p.proof, BigInt(now) + 3600n], {
+    await venue.write.postAsk([INSTRUMENT, q.handle, p.handle, q.proof, p.proof], {
       account: maker.account,
     }),
   );

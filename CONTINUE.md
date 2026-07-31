@@ -45,7 +45,7 @@ Use a private endpoint (Alchemy free tier is fine).
 **`venue/frontend/.env.local`**:
 
 ```
-VITE_VENUE=0x97239e7f58ff1795991949961deb32794422eaf8
+VITE_VENUE=0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23
 VITE_CHAIN_ID=11155111
 VITE_NOX_GATEWAY_URL=https://gateway-testnets.noxprotocol.dev
 VITE_NOX_SUBGRAPH_URL=https://thegraph.ethereum-sepolia-testnet.noxprotocol.io/api/subgraphs/id/9CsccKwvgYFo72zZeU4k4wj2NEBLdWhVE3EUandgmzgo
@@ -74,7 +74,8 @@ npx hardhat run scripts/fund-accounts.ts --network sepolia   # tops up from depl
 
 | What | Address |
 |---|---|
-| **DeferralVenue (current, two-sided)** | `0x97239e7f58ff1795991949961deb32794422eaf8` |
+| **DeferralVenue (current — no expiry, 1h deferral)** | `0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23` |
+| DeferralVenue (retired, two-sided with expiry) | `0x97239e7f58ff1795991949961deb32794422eaf8` |
 | DeferralVenue (retired, ask-only) | `0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569` |
 | IdentityRegistry (shared by all 3 tokens) | `0x9eF9D65E08Acc1fc91bF2815409Ac6782e20eF66` |
 | Auditor / regulator | `0xACc8D0072bB98eA0764704D1CA585140Fa981cc7` |
@@ -97,22 +98,40 @@ source of truth and are committed.
 
 ## 3. What the last redeploy changed
 
-The venue was ask-only. Four separate feature requests all turned out to need the
-same contract change, so they were done together:
+Two contract changes, both requiring a redeploy because they touch the `Order`
+struct and a constant:
 
-- **`Side` on `Order`** — `postBid` rests a bid escrowing cash; `hit` sells into
-  one. The book is genuinely two-sided, so **market sell executes** instead of
-  being a marketable limit with nothing to hit.
-- **`uint8 instrument` on `Order` and `Fill`** — plaintext, because *which*
-  security is quoted is not the secret (the size and price are). Replaced a
-  localStorage tag map plus a shipped seed map that could never cover orders from
-  another browser.
-- **`withdrawCash` / `withdrawShares`** — escrow could previously only be
-  emptied by trading it away.
-- Circuit breakers (`setPaused`, `setFillFrozen`) were added earlier and are now
-  live for the first time; the retired venue predates them.
+- **`expiry` is gone from `Order`.** `postAsk` and `postBid` no longer take it,
+  `fill` and `hit` no longer check it, and `OrderPosted` carries
+  `(side, instrument)` instead. It was never a working feature: every caller set
+  a lifetime past any horizon that mattered, so nothing ever expired, and the
+  only place it surfaced was a timestamp in the book that nobody could act on.
+  Orders now rest until cancelled, which is what they already did.
+- **`LIS_DEFERRAL` is 3600, not 90.** The visibility control offers Immediate /
+  1 hour / Never, with **1 hour as the default** — an hour is short enough to
+  wait out in a demo and long enough to be a real deferral. Anything other than
+  the contract's own constant would be a delay the UI promises and the chain
+  does not enforce, since `publishVolume` is callable by anyone once the
+  deadline passes.
 
-47 contract tests pass (`cd nox && npx hardhat test`).
+Everything the previous redeploy added is unchanged and still live: `Side` on
+`Order` (`postBid` / `hit`), the plaintext `uint8 instrument`, `withdrawCash` /
+`withdrawShares`, and the auditor's circuit breakers.
+
+Frontend changes that needed no contract work:
+
+- **Market orders carry a 2% price collar.** They used to send a bid of `1e12`
+  (crosses any ask) or an ask of `1` (accepts any bid), and settlement charges
+  the RESTING price — so an absurd quote was paid in full. Now they send
+  `reference × (1 ± 2%)` and the contract's own crossing test does the work.
+- **The taker's unfilled remainder is rested automatically.** After a fill the
+  UI decrypts the executed quantity (the taker holds the viewer grant), reports
+  what actually traded, and posts the difference as a resting order.
+- **Escrow withdrawal is wired.** The wallet panel has *Withdraw from escrow*
+  (venue) beside *Unwrap* (wrapper). They are different boundaries and were
+  being conflated.
+
+46 contract tests pass (`cd nox && npx hardhat test`).
 
 ### Re-seeding after a redeploy
 
@@ -121,15 +140,31 @@ arrays and are not migrated.
 
 ```bash
 cd nox
+npx hardhat run scripts/fund-accounts.ts --network sepolia    # seeding costs ~0.02 ETH per side
 npx hardhat run scripts/redeploy-venue.ts --network sepolia   # venue only, keeps wrappers
-# put the new address in frontend/.env.local
-npx hardhat run scripts/seed-book.ts --network sepolia        # bids + asks + a trade each side
+# put the new address in frontend/.env.local AND in the Vercel project's env vars
+npx hardhat run scripts/seed-book.ts --network sepolia        # ~18 orders + 6 prints, ~10 min
 npx hardhat verify --network sepolia <VENUE> <IDENTITY_REGISTRY> <AUDITOR>
 ```
+
+`seed-book.ts` builds three asks and three bids per instrument, quoted from BOTH
+accounts, and then trades once on each side of each book. Three things about it
+are deliberate and worth keeping if you edit it:
+
+- **Both accounts quote both sides.** `fill` and `hit` reject a self-trade, so a
+  book where one address holds every ask is untradable by that address.
+- **Levels sit inside the frontend's 2% collar**, or a market order cannot reach
+  them and the button looks broken.
+- **The seeded trades are partial and the orders are reopened afterwards.** A
+  fill parks its order in `PendingResolution` until the maker clears it, so
+  without the `reopen` the traded levels vanish from the book.
 
 Other scripts: `deploy-instrument.ts` (trex — new ERC-3643 token reusing the
 registry), `deploy-instrument-wrapper.ts` (nox — its wrapper), then
 `register-holder.ts` (trex) to whitelist the wrapper as a holder of record.
+`seed-instrument-orders.ts` and `seed-instrument-fills.ts` are gone: they
+predated the instrument field, called a signature the contract no longer has,
+and hardcoded order ids from a retired deployment.
 
 ---
 
@@ -176,9 +211,16 @@ signs decryption authorizations off-chain.
 - **An order can never be known to be exhausted**, since `qtyRemaining` is
   ciphertext. Partial-fill bars are drawn only from a size *this browser*
   recorded at post time; other orders read "size sealed" rather than guessing.
-- **Visibility delay is 90s or immediate**, not arbitrary — `LIS_DEFERRAL` is a
-  contract constant. "Never" is real, and is simply never calling `reportTrade`;
-  the regulator's unreported list is what catches it.
+- **Visibility delay is one hour or immediate**, not arbitrary — `LIS_DEFERRAL`
+  is a contract constant, so a different length is a redeploy. "Never" is real,
+  and is simply never calling `reportTrade`; the regulator's unreported list is
+  what catches it.
+- **The 2% market collar is a FRONTEND rule.** The contract enforces whatever
+  encrypted bid or ask it is handed; the collar is the frontend choosing that
+  number honestly. A caller going straight to the contract can still send a bid
+  of `1e12`. Making it a contract rule would need a plaintext reference price on
+  chain, which this venue does not have — there is no oracle and the book is
+  dark.
 - **Indicative prices** (`reference.ts`) are issue-level reference data for
   instruments that have not printed yet, labelled as such. They are never
   presented as market prices.
@@ -187,22 +229,28 @@ signs decryption authorizations off-chain.
 
 ## 6. Where the work stopped
 
-Done and verified live: two-sided book, per-instrument books and prints, market
-buy and sell, inline auto-funding, execution safety guard, portal tooltips,
-3-column layout, buy/sell theming, regulator blotter + circuit breakers,
-withdrawal.
+Done and verified live: two-sided book with three levels a side in every
+instrument, per-instrument books and prints, market buy and sell inside a 2%
+collar, automatic resting of a taker's remainder, escrow withdrawal, inline
+auto-funding, execution safety guard, portal tooltips, 3-column layout, buy/sell
+theming, regulator blotter + circuit breakers.
 
 Not done:
 
-- **The frontend still shows a single merged book.** The contract now
-  distinguishes bids from asks (`Order.side`), but `renderBook` lists them
-  together. A proper depth ladder — bids one side, asks the other — is the
-  obvious next step and needs no contract work.
+- **The frontend still shows a single merged book.** Rows now carry a bid/ask
+  pill, but they are one list sorted by id. A proper depth ladder — bids one
+  side, asks the other — needs no contract work.
 - **`reopen` is still manual.** After a fill the order sits in
   `PendingResolution` until the maker confirms; the contract cannot read its own
-  encrypted result to clear it.
-- **Withdrawal is wired to the wrapper's unwrap**, not to venue escrow. The
-  contract now has `withdrawCash` / `withdrawShares` but the UI does not call
-  them yet.
+  encrypted result to clear it. The seeding script calls `reopen` itself, but a
+  maker trading through the UI still has to press the button. Auto-reopening
+  after a fill is the obvious follow-up and needs no contract change.
+- **The remainder is rested by the FRONTEND, in a second transaction.** It
+  cannot be done inside `fill`: the contract cannot read how much of an
+  encrypted quantity it just moved, so it cannot know what is left to rest. If
+  the executed size has not resolved when the user walks away, nothing is
+  posted — the UI says so rather than guessing.
 - **No subgraph.** Orders and fills are enumerated by index off `ordersCount()` /
-  `fillsCount()`, one `eth_call` each. Fine at this size, linear as it grows.
+  `fillsCount()`, one `eth_call` each. With 18 orders and 6 fills a refresh is
+  already ~50 sequential calls on a public RPC and takes several seconds; it is
+  linear from here.

@@ -101,7 +101,31 @@
             </div>
 
             <div class="subsection">
-              <h4>Withdraw</h4>
+              <h4>Withdraw from escrow</h4>
+              <p class="hint left">
+                Where a sale's proceeds actually land. Settlement moves value between
+                encrypted escrow balances inside the venue &mdash; nobody is sent tokens &mdash;
+                so cash sits here until you take it out. Asking for more than you hold moves
+                nothing rather than failing.
+              </p>
+              <form id="escrowWithdrawForm" class="form">
+                <div class="field">
+                  <label for="escrowWithdrawLeg">Balance</label>
+                  <select id="escrowWithdrawLeg">
+                    <option value="cash">Escrowed cash</option>
+                    <option value="shares">Escrowed shares</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="escrowWithdrawAmount">Amount</label>
+                  <input id="escrowWithdrawAmount" type="number" min="1" step="1" placeholder="10000" />
+                </div>
+                <button type="submit" class="primary" data-async="escrow-withdraw">Withdraw from escrow</button>
+              </form>
+            </div>
+
+            <div class="subsection">
+              <h4>Unwrap</h4>
               <p class="hint left">
                 Releases a hidden balance back to your wallet as plaintext
                 <span id="withdrawSymbol" class="mono">ACME30</span>. Two steps on-chain: the
@@ -162,7 +186,9 @@
             <h2>Order book</h2>
             <span id="bookRef" class="hint mono"></span>
           </div>
-          <p class="hint left">dark pre-trade &mdash; sizes and prices are ciphertext</p>
+          <p class="hint left">
+            dark pre-trade &mdash; sizes and prices are ciphertext. Orders rest until cancelled.
+          </p>
           <div id="book" class="rows">
             <p class="empty">Loading the public book…</p>
           </div>
@@ -262,6 +288,11 @@
               <input id="entryPrice" type="number" min="1" step="1" placeholder="987500" required />
             </div>
 
+            <!-- The collar a market order transacts inside. Shown because the
+                 book is dark: without it, "at market" would mean accepting a
+                 price nobody can see. -->
+            <p id="collarNote" class="micro"></p>
+
             <div class="field" id="bucketField">
               <label for="entryBucket">
                 Visibility delay
@@ -269,9 +300,10 @@
               </label>
               <select id="entryBucket">
                 <option value="immediate">Immediate — size public on report</option>
-                <option value="lis" selected>1.5 min — large-in-scale waiver</option>
+                <option value="lis" selected>1 hour — large-in-scale waiver</option>
                 <option value="never">Never — do not publish the size</option>
               </select>
+              <p id="bucketNote" class="micro"></p>
             </div>
 
             <p id="fundingNote" class="micro"></p>

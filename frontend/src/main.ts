@@ -95,7 +95,8 @@ const state = {
   handleClient: null as HandleClient | null,
   handleClientFor: "",
   priceScale: 10000n,
-  lisDeferral: 90n,
+  /** Overwritten from LIS_DEFERRAL at boot; the contract's constant is 1 hour. */
+  lisDeferral: 3600n,
   auditor: "",
   registry: "",
   instrumentSymbol: "",
@@ -128,20 +129,20 @@ const state = {
 // ---------------------------------------------------------------------------
 
 /**
- * The venue is ASK-ONLY, and that is a property of the contract, not a gap in
- * this screen. `postAsk` creates resting liquidity; `fill` consumes it. There is
- * no `postBid`, so:
+ * The book is two-sided, so each side of the form has both a taking and a
+ * resting path, and which one runs depends on what is on the book:
  *
- *   SELL = post an ask   — you become the maker and the reporting entity
- *   BUY  = fill an ask   — you are the taker, hitting one resting order
+ *   BUY   takes a resting ask via `fill`, or rests a bid via `postBid`
+ *   SELL  takes a resting bid via `hit`, or rests an ask via `postAsk`
  *
- * That also decides what the order types can honestly mean. A LIMIT BUY is
- * native: `Nox.ge(bid, o.price)` compares your encrypted bid against the
- * encrypted ask, and a bid that does not cross settles for zero. A MARKET BUY
- * is a bid set high enough to cross whatever the ask turns out to be — safe,
- * because the taker is debited `qty × ask ÷ SCALE`, never the bid, so bidding
- * high does not overpay. A MARKET SELL has nothing to hit: there are no resting
- * bids to lift, so it is refused rather than faked.
+ * That is also what the order types mean here. A LIMIT order states the price
+ * it will cross at: `Nox.ge(bid, o.price)` for a buy, `Nox.ge(o.price, ask)`
+ * for a sell, and a price that does not cross settles for zero rather than
+ * reverting. A MARKET order has no stated price, so it sends the edge of the
+ * collar (see COLLAR_BPS) — high enough to cross a fair quote, low enough that
+ * an absurd one cannot be lifted. Taking is always partial-capable: the
+ * contract fills `min(wanted, resting)`, and `settleTaker` rests whatever did
+ * not trade.
  */
 type Side = "buy" | "sell";
 type OrderType = "limit" | "market";
@@ -152,20 +153,25 @@ const entry = {
 };
 
 /**
- * Orders rest until cancelled, like any ordinary exchange.
+ * How far from the reference price a MARKET order is willing to be filled.
  *
- * `expiry` is a required uint64 the contract compares against block.timestamp,
- * so "no expiry" has to be expressed as a date past any horizon that matters
- * rather than omitted. Asking a trader for a lifetime was answering a question
- * the contract forces on us, not one they had — an unfilled order is cancelled,
- * not waited out.
+ * This is a real price collar, not a display nicety, and it closes a genuine
+ * hole. A market buy has to cross a price it cannot read, so it used to send an
+ * encrypted bid of 1e12 — a number that crosses ANY ask. The taker is debited
+ * `qty × the ask ÷ SCALE`, never their own bid, so an absurd resting quote was
+ * paid in full. A market sell had the mirror problem with an ask of 1: it
+ * accepted whatever the bid happened to be.
+ *
+ * Sending `reference × (1 ± 2%)` instead turns the contract's own crossing test
+ * into the collar — `Nox.ge(bid, o.price)` for a buy, `Nox.ge(o.price, ask)`
+ * for a sell. Outside the band the trade settles for zero rather than at a bad
+ * price, which is why `reportExecution` below decrypts what actually filled and
+ * says so instead of letting a no-op look like a fill.
  */
-const GTC_EXPIRY = 4_102_444_800n; // 2100-01-01Z
+const COLLAR_BPS = 200n; // 2%
 
-/** A market buy must cross an unknown, encrypted ask. uint256 headroom is
- *  enormous, but safeMul still has to not overflow downstream, so this is large
- *  enough to cross any sane quote and far below the overflow gate. */
-const MARKET_BID = 10n ** 12n;
+const collarBuy = (reference: bigint) => reference + (reference * COLLAR_BPS) / 10_000n;
+const collarSell = (reference: bigint) => reference - (reference * COLLAR_BPS) / 10_000n;
 
 // ---------------------------------------------------------------------------
 // encrypted values
@@ -337,6 +343,44 @@ async function tryDecrypt(handle: string): Promise<bigint | null> {
 
   inFlight.set(handle, task);
   return task;
+}
+
+/**
+ * Decrypt a handle we are willing to WAIT for.
+ *
+ * `tryDecrypt` is built for rendering: one attempt, then a 30-second backoff so
+ * a poll does not re-ask a pending handle forever. Settlement is the opposite
+ * situation — the value is expected to land within seconds, and the answer
+ * decides what happens next (whether a remainder is posted, whether the trade
+ * executed at all), so here it is worth blocking for.
+ *
+ * Returns null when it never resolves. A null is "not known", never zero: the
+ * caller must not turn silence into a number.
+ */
+async function awaitDecrypt(handle: string, attempts = 10, delayMs = 3000): Promise<bigint | null> {
+  if (!handle || handle === ZeroHash) return null;
+
+  for (let i = 0; i < attempts; i++) {
+    const cached = decrypted.get(handle);
+    if (cached !== undefined) return cached;
+
+    try {
+      const v = await serialize(async () => {
+        const client = await getHandleClient();
+        const { value } = await client.decrypt(handle as any);
+        return BigInt(value as bigint);
+      });
+      decrypted.set(handle, v);
+      pendingUntil.delete(handle);
+      return v;
+    } catch (e) {
+      // Only a transient failure is worth another attempt. A denial or a dead
+      // handle will fail identically forever.
+      if (!isTransient(e)) return null;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return null;
 }
 
 const publicValues = new Map<string, bigint>();
@@ -682,8 +726,8 @@ function openKyc() {
          <h4>What you can still do</h4>
          <ul>
            <li>Read the public tape &mdash; prints need no wallet.</li>
-           <li>Inspect the book: order ids, makers and expiries are public; only sizes and prices
-           are sealed.</li>
+           <li>Inspect the book: order ids, makers, sides and instruments are public; only sizes
+           and prices are sealed.</li>
          </ul>`
       : c.countryGateActive && !c.countryAllowed
         ? `<p>Identity is verified, but <strong>${escapeHtml(countryName(c.country))}</strong>
@@ -767,7 +811,6 @@ interface OrderRow {
   instrument: number;
   qtyRemaining: string;
   price: string;
-  expiry: bigint;
   stateCode: number;
   pricePublic: boolean;
 }
@@ -976,7 +1019,6 @@ async function refreshOnce() {
         instrument: Number(o.instrument),
         qtyRemaining: o.qtyRemaining,
         price: o.price,
-        expiry: o.expiry,
         stateCode: Number(o.state),
         pricePublic: await isPublic(o.price),
       });
@@ -1268,10 +1310,16 @@ function progressMarkup(o: OrderRow): string {
     </div>`;
 }
 
-function orderStatusChip(o: OrderRow, expired: boolean): string {
+/**
+ * An order is open, mid-settlement or cancelled — there is no fourth state.
+ *
+ * "Expired" used to be one. It is gone with the contract's expiry field: every
+ * caller set a lifetime past any horizon that mattered, so nothing ever expired
+ * and the row only ever showed a timestamp nobody could act on.
+ */
+function orderStatusChip(o: OrderRow): string {
   if (o.stateCode === OrderState.PendingResolution) return statusChip("computing", "pending resolution");
   if (o.stateCode === OrderState.Cancelled) return statusChip("failed", "cancelled");
-  if (expired) return statusChip("failed", "expired");
   return statusChip("confirmed", ORDER_STATE_LABEL[o.stateCode] ?? "open");
 }
 
@@ -1307,8 +1355,6 @@ function renderBook() {
     return;
   }
 
-  const now = BigInt(Math.floor(Date.now() / 1000));
-
   // Orders carry no timestamp, so id order IS date order — ids are assigned
   // sequentially at post time. Newest first.
   const sorted = [...live].sort((a, b) => b.id - a.id);
@@ -1316,20 +1362,18 @@ function renderBook() {
   host.innerHTML = sorted
     .map((o) => {
       const mine = o.maker.toLowerCase() === state.account.toLowerCase();
-      const expired = o.expiry <= now;
       const pending = o.stateCode === OrderState.PendingResolution;
 
-      const canFill = !mine && !expired && !pending && state.compliance.verified === true;
+      const canFill = !mine && !pending && state.compliance.verified === true;
 
-      const gtc = o.expiry >= GTC_EXPIRY;
       return `
       <div class="row ${mine ? "mine" : ""}">
         <div class="row-main">
           <div class="row-title">
             <strong>#${o.id}</strong>
-            ${orderStatusChip(o, expired)}
+            ${orderStatusChip(o)}
+            <span class="pill ${o.side === 1 ? "solid" : "muted"}">${o.side === 1 ? "bid" : "ask"}</span>
             ${mine ? `<span class="pill solid">yours</span>` : ""}
-            ${gtc ? `<span class="pill muted">GTC</span>` : ""}
             <span class="lock"><svg><use href="#i-lock" /></svg><span>size &amp; price encrypted</span></span>
           </div>
           ${mine ? progressMarkup(o) : ""}
@@ -1337,22 +1381,19 @@ function renderBook() {
             <span>maker ${escapeHtml(shortAddr(o.maker))}</span>
             <span class="mono">qty ${escapeHtml(short(o.qtyRemaining))}</span>
             <span class="mono">px ${escapeHtml(short(o.price))}</span>
-            ${gtc ? `<span>no expiry</span>` : `<span>expires ${new Date(Number(o.expiry) * 1000).toLocaleTimeString()}</span>`}
           </div>
         </div>
         <div class="actions">
           ${
             mine
               ? ""
-              : `<button class="small" data-trade="${o.id}" data-bucket="${Bucket.LargeInScale}" ${canFill ? "" : "disabled"}
+              : `<button class="small" data-trade="${o.id}" data-side="${o.side}" data-bucket="${Bucket.LargeInScale}" ${canFill ? "" : "disabled"}
                    data-tip="${
                      canFill
-                       ? "Loads this order into the entry terminal, where you set bid, size and visibility delay before signing."
-                       : expired
-                         ? "This order has expired."
-                         : pending
-                           ? "A fill on this order is still resolving."
-                           : "Your address is not verified in the ERC-3643 register."
+                       ? "Loads this order into the entry terminal, where you set your price, size and visibility delay before signing."
+                       : pending
+                         ? "A fill on this order is still resolving."
+                         : "Your address is not verified in the ERC-3643 register."
                    }">Trade</button>`
           }
         </div>
@@ -1378,28 +1419,24 @@ function renderMyOrders() {
     return;
   }
 
-  const now = BigInt(Math.floor(Date.now() / 1000));
-
   host.innerHTML = [...mine]
     .reverse()
     .map((o) => {
       const pending = o.stateCode === OrderState.PendingResolution;
       const cancelled = o.stateCode === OrderState.Cancelled;
-      const gtc = o.expiry >= GTC_EXPIRY;
       return `
       <div class="row mine">
         <div class="row-main">
           <div class="row-title">
             <strong>#${o.id}</strong>
-            ${orderStatusChip(o, o.expiry <= now)}
-            <span class="pill muted">sell</span>
-            ${gtc ? `<span class="pill solid" data-tip="Good 'til cancelled — rests until you cancel it.">GTC</span>` : ""}
+            ${orderStatusChip(o)}
+            <span class="pill muted">${o.side === 1 ? "buy" : "sell"}</span>
+            <span class="pill solid" data-tip="Rests until you cancel it. The venue has no order lifetime — nothing expires on its own.">GTC</span>
           </div>
           ${progressMarkup(o)}
           <div class="row-meta">
             <span class="mono">qty ${escapeHtml(short(o.qtyRemaining))}</span>
             <span class="mono">px ${escapeHtml(short(o.price))}</span>
-            ${gtc ? "" : `<span>expires ${new Date(Number(o.expiry) * 1000).toLocaleTimeString()}</span>`}
           </div>
         </div>
         <div class="actions">
@@ -1997,18 +2034,32 @@ type Visibility = "immediate" | "lis" | "never";
 /**
  * How this trade's size reaches the public tape.
  *
- * Only two of the three are an on-chain PARAMETER: `fill` takes a bucket, and
- * the contract turns it into `now` or `now + LIS_DEFERRAL`. Arbitrary delays are
- * not available — the schedule is fixed in the contract, not chosen per trade.
+ * Three choices, and only two of them are an on-chain PARAMETER: `fill` and
+ * `hit` take a bucket, and the contract turns it into `now` or
+ * `now + LIS_DEFERRAL`. The deferral is a contract CONSTANT — one hour — not a
+ * number chosen per trade, so the UI names the length the contract will
+ * actually apply rather than offering a timer it cannot honour.
  *
- * "Never" is not a bucket at all. Publication requires the maker to call
- * `reportTrade`, and nothing compels them; skipping it means the size is never
- * published. That is a real and deliberately reachable state — it is exactly
- * what the regulator's unreported list exists to catch — so it is offered
- * honestly rather than dressed up as a timer.
+ * "Never" is not a bucket at all. Publication requires the reporting entity to
+ * call `reportTrade`, and nothing compels them; skipping it means the size is
+ * never published. That is a real and deliberately reachable state — it is
+ * exactly what the regulator's unreported list exists to catch — so it is
+ * offered honestly rather than dressed up as a timer.
+ *
+ * Deferred is the DEFAULT. This book is dark for large orders, and publishing a
+ * size the instant it settles is the one choice that undoes that.
  */
 function visibilityChoice(): Visibility {
   return ((el("entryBucket") as HTMLSelectElement | null)?.value as Visibility) ?? "lis";
+}
+
+/** The deferral, as the contract states it. Read at boot; 1h is the constant. */
+function deferralLabel(): string {
+  const s = Number(state.lisDeferral);
+  if (!s) return "deferred";
+  if (s % 3600 === 0) return `${s / 3600} hour${s === 3600 ? "" : "s"}`;
+  if (s % 60 === 0) return `${s / 60} min`;
+  return `${s}s`;
 }
 
 /** Which leg funds the current side: buys spend cash, sells post shares. */
@@ -2194,13 +2245,31 @@ function applyAllocation(pct: number) {
  */
 const BUFFER_BPS = 50n; // 0.5%
 
+/**
+ * The price this order will actually transact at.
+ *
+ * A limit order transacts at the price the trader typed. A MARKET order has no
+ * typed price, so it transacts at the edge of the collar — the worst level it
+ * is willing to accept. That is the number to fund against and to rest any
+ * unfilled remainder at, because it is the only price the order commits to.
+ */
+function executionPrice(): bigint {
+  if (entry.type === "market") {
+    const ref = referencePrice();
+    return entry.side === "buy" ? collarBuy(ref) : collarSell(ref);
+  }
+  return BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+}
+
 /** What the trade needs in the funding leg, at the price actually being used. */
 function requiredFunding(qty: bigint): bigint {
   if (entry.side === "sell") return qty;
-  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  const ref = typed > 0n ? typed : (lastPrint()?.price ?? 0n);
-  if (ref <= 0n) return 0n;
-  return (qty * ref) / state.priceScale;
+  // A market buy funds the TOP of the collar, since that is the most it can be
+  // charged. Funding the reference instead would leave every fill above it
+  // silently settling for zero — the exact failure this form exists to prevent.
+  const price = executionPrice();
+  if (price <= 0n) return 0n;
+  return (qty * price) / state.priceScale;
 }
 
 const withBuffer = (amount: bigint): bigint => amount + (amount * BUFFER_BPS) / 10_000n;
@@ -2279,10 +2348,10 @@ function syncFromNotional() {
   renderSafety();
 }
 
-/** The price the form is working at: the typed limit, else the reference. */
+/** The price the form is working at: what it will transact at, else the reference. */
 function workingPrice(): bigint {
-  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  return typed > 0n ? typed : referencePrice();
+  const price = executionPrice();
+  return price > 0n ? price : referencePrice();
 }
 
 /** Shrinks the quantity until the buffer fits. */
@@ -2331,6 +2400,22 @@ function renderEntry() {
   const priceLabel = el("priceLabel");
   if (priceLabel) priceLabel.textContent = "Target price";
 
+  // A market order in a dark book still has to state a worst acceptable price,
+  // so say what it is. The number is the actual encrypted bid or ask the trade
+  // will carry, not a rule of thumb.
+  const collarNote = el("collarNote");
+  if (collarNote) {
+    if (market) {
+      const limit = buy ? collarBuy(referencePrice()) : collarSell(referencePrice());
+      collarNote.textContent =
+        `Executes within ${Number(COLLAR_BPS) / 100}% of the reference — ` +
+        `${buy ? "paying no more than" : "receiving no less than"} ${unscale(limit)}. ` +
+        `Outside that band the trade settles for zero rather than at a bad price.`;
+    } else {
+      collarNote.textContent = "";
+    }
+  }
+
   const submit = el("entrySubmit") as HTMLButtonElement | null;
   if (submit) {
     submit.textContent = buy
@@ -2345,23 +2430,32 @@ function renderEntry() {
     submit.disabled = false;
   }
 
-  // The visibility choice applies to BOTH sides now, but the control it gives
-  // you differs. A buyer declares the waiver bucket in `fill`, which sets the
-  // deferral length. A seller is the REPORTING ENTITY: they cannot change the
-  // length — the taker's declaration fixes that — but they decide whether and
-  // when to report at all, which is the stronger lever.
+  // ONE set of choices for both sides. The taker of a trade declares the bucket
+  // — that is true whichever way the trade goes, since `fill` and `hit` both
+  // take it from whoever calls them — so a buyer lifting an ask and a seller
+  // hitting a bid have exactly the same control, and there is no reason for the
+  // menu to change under them.
   el("bucketField")?.classList.remove("hidden");
   const bucketSel = el("entryBucket") as HTMLSelectElement | null;
   if (bucketSel) {
-    const keep = bucketSel.value;
-    bucketSel.innerHTML = buy
-      ? `<option value="immediate">Immediate — size public on report</option>
-         <option value="lis">1.5 min — large-in-scale waiver</option>
-         <option value="never">Never — do not publish the size</option>`
-      : `<option value="immediate">Report on fill — size public promptly</option>
-         <option value="never">Do not report — size never published</option>`;
-    if ([...bucketSel.options].some((o) => o.value === keep)) bucketSel.value = keep;
-    else bucketSel.value = buy ? "lis" : "immediate";
+    const keep = bucketSel.value || "lis";
+    bucketSel.innerHTML = `
+      <option value="immediate">Immediate — size public on report</option>
+      <option value="lis">${deferralLabel()} — large-in-scale waiver</option>
+      <option value="never">Never — do not publish the size</option>`;
+    bucketSel.value = ["immediate", "lis", "never"].includes(keep) ? keep : "lis";
+  }
+
+  // An order that RESTS discloses nothing yet: it has not traded, so there is no
+  // size to publish and the choice above only takes effect when someone takes
+  // it. Saying so beats letting the control look inert.
+  const bucketNote = el("bucketNote");
+  if (bucketNote) {
+    const resting = buy ? !pickTarget() : !pickBid();
+    bucketNote.textContent =
+      !market && resting
+        ? "Nothing to take right now, so this order will rest. The delay applies to whoever trades against it."
+        : "";
   }
 
   const unit = el("qtyUnit");
@@ -2382,13 +2476,11 @@ function renderEntry() {
  * taker both sides of the cash transfer resolve to one storage slot.
  */
 function openOrders(side: number): OrderRow[] {
-  const now = BigInt(Math.floor(Date.now() / 1000));
   const acct = state.account.toLowerCase();
   return orders.filter(
     (o) =>
       o.side === side &&
       o.stateCode === OrderState.Open &&
-      o.expiry > now &&
       o.instrument === instrumentIndex() &&
       (!acct || o.maker.toLowerCase() !== acct),
   );
@@ -2477,6 +2569,114 @@ async function ensureFunded(need: bigint): Promise<boolean> {
   return true;
 }
 
+/**
+ * Rests an order on the book and remembers its size locally.
+ *
+ * The remembered size is what draws the partial-fill bar: `qtyRemaining` is a
+ * ciphertext and the original is never stored on-chain, so remaining/original
+ * cannot be reconstructed from contract state. Recording the number the user
+ * typed is legitimate — it is their own order and their own plaintext — and
+ * failing to record it degrades the bar to "size sealed", never to a guess.
+ */
+async function restOrder(side: Side, qty: bigint, price: bigint, label: string): Promise<boolean> {
+  const done = await asyncAction(
+    { button: el("entrySubmit") as HTMLButtonElement, label, async: true, onSettled: refresh },
+    async () => {
+      const q = await encryptInput(qty, CONFIG.venue);
+      const p = await encryptInput(price, CONFIG.venue);
+      const tx =
+        side === "buy"
+          ? await state.venue!.postBid(instrumentIndex(), q.handle, p.handle, q.proof, p.proof)
+          : await state.venue!.postAsk(instrumentIndex(), q.handle, p.handle, q.proof, p.proof);
+      const receipt = await tx.wait();
+      try {
+        const id = (await count("orders")) - 1;
+        if (id >= 0) rememberPosted(id, qty);
+      } catch {
+        /* progress bar degrades to "size sealed" — never to a guess */
+      }
+      return receipt;
+    },
+  );
+  return done !== undefined;
+}
+
+/**
+ * What actually filled, and what to do with what did not.
+ *
+ * A taker asks for a size; the contract fills `min(wanted, qtyRemaining)` and
+ * zeroes the whole thing if the price did not cross. Neither outcome reverts —
+ * a revert would leak the size or the price the caller was not entitled to
+ * learn — so from the outside a partial fill, a full fill and a trade that did
+ * nothing at all look identical.
+ *
+ * The taker CAN read the answer: `fill` and `hit` both grant them a viewer role
+ * on the executed quantity. So this decrypts it and then does the two things
+ * the old flow left to the user: it says plainly what executed, and it rests
+ * the unfilled remainder as a real order instead of quietly dropping it.
+ */
+async function settleTaker(opts: {
+  wanted: bigint;
+  price: bigint;
+  side: Side;
+  market: boolean;
+}): Promise<void> {
+  const { wanted, price, side, market } = opts;
+
+  const fillId = (await count("fills")) - 1;
+  if (fillId < 0) return;
+
+  let qtyHandle = "";
+  try {
+    qtyHandle = (await state.venue!.fills(fillId)).qty;
+  } catch {
+    return;
+  }
+
+  const executed = await awaitDecrypt(qtyHandle);
+
+  if (executed === null) {
+    toast(
+      "info",
+      "Execution still resolving",
+      "The TEE has not published your fill size yet, so no remainder was posted. Re-enter the balance of the order once it lands.",
+    );
+    return;
+  }
+
+  if (executed === 0n) {
+    toast(
+      "error",
+      "Nothing executed",
+      market
+        ? `The resting price was outside your ${Number(COLLAR_BPS) / 100}% collar, so the trade settled for zero. Nothing was paid.`
+        : "Your limit did not cross the resting price, so the trade settled for zero. Nothing was paid.",
+      11000,
+    );
+  } else if (executed < wanted) {
+    toast(
+      "ok",
+      "Partially executed",
+      `${fmt(executed)} of ${fmt(wanted)} traded. Resting the remaining ${fmt(wanted - executed)} on the book.`,
+    );
+  } else {
+    toast("ok", "Executed in full", `${fmt(executed)} traded.`);
+    return;
+  }
+
+  const remainder = wanted - executed;
+  if (remainder <= 0n || price <= 0n) return;
+
+  // The remainder becomes a resting order on the SAME side the trader wanted:
+  // an unfilled buy rests as a bid, an unfilled sell rests as an ask. It rests
+  // at the price the order committed to — the typed limit, or the collar edge
+  // for a market order, which is the worst level it already accepted.
+  const funded = side === "buy" ? (remainder * price) / state.priceScale : remainder;
+  if (funded > 0n && !(await ensureFunded(funded))) return;
+
+  await restOrder(side, remainder, price, side === "buy" ? "Rest remaining bid" : "Rest remaining offer");
+}
+
 async function onEntrySubmit(e: Event) {
   e.preventDefault();
   if (!requireReady()) return;
@@ -2487,157 +2687,99 @@ async function onEntrySubmit(e: Event) {
     return;
   }
 
+  const market = entry.type === "market";
+  const price = executionPrice();
+  if (price <= 0n) {
+    toast(
+      "error",
+      market ? "No reference price" : "Target price must be positive",
+      market ? "Nothing has printed in this instrument and it has no indicative level." : undefined,
+    );
+    return;
+  }
+
   // Fund first, in the same flow, so there is no separate deposit step.
   const need = requiredFunding(qty);
   if (need > 0n && !(await ensureFunded(need))) return;
 
+  const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
+
   if (entry.side === "buy") {
-    // "never" still settles under the LIS bucket; what makes it never public is
-    // that reportTrade is never called.
-    const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
     const chosen = pickTarget();
 
-    // MARKET BUY, or a limit that can cross right now: lift a resting ask.
-    if (entry.type === "market" || chosen) {
+    // MARKET BUY, or a limit with something to lift: take a resting ask.
+    if (market || chosen) {
       if (!chosen) {
         toast(
           "error",
           "Nothing offered",
-          `No resting offers in ${state.instrument.symbol} to buy from. Post a bid instead.`,
+          `No resting offers in ${state.instrument.symbol} to buy from. Post a limit bid instead.`,
         );
         return;
       }
-      const bid =
-        entry.type === "market"
-          ? MARKET_BID
-          : BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-      if (bid <= 0n) {
-        toast("error", "Target price must be positive");
-        return;
-      }
-      await asyncAction(
+      const done = await asyncAction(
         {
           button: el("entrySubmit") as HTMLButtonElement,
-          label: `${entry.type === "market" ? "Market" : "Limit"} buy`,
+          label: market ? "Market buy" : "Limit buy",
           async: true,
           onSettled: refresh,
         },
         async () => {
-          const b = await encryptInput(bid, CONFIG.venue);
+          // The bid is the CEILING, not the price paid: settlement charges
+          // `qty × the ask ÷ SCALE`. For a market order that ceiling is the
+          // collar, which is what stops an absurd resting quote being lifted.
+          const b = await encryptInput(price, CONFIG.venue);
           const q = await encryptInput(qty, CONFIG.venue);
           const tx = await state.venue!.fill(BigInt(chosen.id), b.handle, q.handle, b.proof, q.proof, bucket);
           return tx.wait();
         },
       );
+      if (done !== undefined) await settleTaker({ wanted: qty, price, side: "buy", market });
       return;
     }
 
-    // LIMIT BUY with nothing to lift: rest a real bid, which the venue now
-    // supports. Previously this had nowhere to go and simply failed.
-    const bidPrice = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-    if (bidPrice <= 0n) {
-      toast("error", "Target price must be positive");
-      return;
-    }
-    await asyncAction(
-      { button: el("entrySubmit") as HTMLButtonElement, label: "Post bid", async: true, onSettled: refresh },
-      async () => {
-        const q = await encryptInput(qty, CONFIG.venue);
-        const p = await encryptInput(bidPrice, CONFIG.venue);
-        const tx = await state.venue!.postBid(
-          instrumentIndex(),
-          q.handle,
-          p.handle,
-          q.proof,
-          p.proof,
-          GTC_EXPIRY,
-        );
-        const receipt = await tx.wait();
-        try {
-          const id = (await count("orders")) - 1;
-          if (id >= 0) rememberPosted(id, qty);
-        } catch {
-          /* progress bar degrades to "size not disclosed" — never to a guess */
-        }
-        return receipt;
-      },
-    );
+    // LIMIT BUY with nothing to lift: rest a real bid.
+    await restOrder("buy", qty, price, "Post bid");
     return;
   }
 
   // ---- sell ----
-  const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
   const restingBid = pickBid();
 
-  // MARKET SELL: hit a resting bid. This is a real immediate execution now —
-  // the venue has a bid side, so there is something to sell INTO rather than
-  // only a queue to join.
-  if (entry.type === "market") {
-    if (!restingBid) {
-      toast(
-        "error",
-        "No bids to hit",
-        `Nobody is bidding for ${state.instrument.symbol} right now. Post a limit offer instead.`,
-      );
-      return;
-    }
-    await asyncAction(
-      { button: el("entrySubmit") as HTMLButtonElement, label: "Market sell", async: true, onSettled: refresh },
-      async () => {
-        // Ask at 1: any resting bid clears it, which is what "at market" means.
-        const a = await encryptInput(1n, CONFIG.venue);
-        const q = await encryptInput(qty, CONFIG.venue);
-        const tx = await state.venue!.hit(BigInt(restingBid.id), a.handle, q.handle, a.proof, q.proof, bucket);
-        return tx.wait();
-      },
-    );
-    return;
-  }
-
-  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  if (price <= 0n) {
-    toast("error", "Target price must be positive");
-    return;
-  }
-
-  // A limit sell that crosses a resting bid executes against it; otherwise it
-  // rests as an ask. Same decision an exchange makes on arrival.
+  // A sell takes a resting bid when there is one — at market, or on a limit
+  // that may cross. Otherwise it rests as an ask. Same decision an exchange
+  // makes on arrival.
   if (restingBid) {
-    await asyncAction(
-      { button: el("entrySubmit") as HTMLButtonElement, label: "Limit sell", async: true, onSettled: refresh },
+    const done = await asyncAction(
+      {
+        button: el("entrySubmit") as HTMLButtonElement,
+        label: market ? "Market sell" : "Limit sell",
+        async: true,
+        onSettled: refresh,
+      },
       async () => {
+        // The ask is the FLOOR. At market that floor is the collar rather than
+        // 1, which is what stops the sale going through at any price at all.
         const a = await encryptInput(price, CONFIG.venue);
         const q = await encryptInput(qty, CONFIG.venue);
         const tx = await state.venue!.hit(BigInt(restingBid.id), a.handle, q.handle, a.proof, q.proof, bucket);
         return tx.wait();
       },
     );
+    if (done !== undefined) await settleTaker({ wanted: qty, price, side: "sell", market });
     return;
   }
 
-  await asyncAction(
-    { button: el("entrySubmit") as HTMLButtonElement, label: "Post sell offer", async: true, onSettled: refresh },
-    async () => {
-      const q = await encryptInput(qty, CONFIG.venue);
-      const p = await encryptInput(price, CONFIG.venue);
-      const tx = await state.venue!.postAsk(
-        instrumentIndex(),
-        q.handle,
-        p.handle,
-        q.proof,
-        p.proof,
-        GTC_EXPIRY,
-      );
-      const receipt = await tx.wait();
-      try {
-        const id = (await count("orders")) - 1;
-        if (id >= 0) rememberPosted(id, qty);
-      } catch {
-        /* progress bar degrades to "size not disclosed" — never to a guess */
-      }
-      return receipt;
-    },
-  );
+  if (market) {
+    toast(
+      "error",
+      "No bids to hit",
+      `Nobody is bidding for ${state.instrument.symbol} right now. Post a limit offer instead.`,
+    );
+    return;
+  }
+
+  await restOrder("sell", qty, price, "Post sell offer");
 }
 
 // ---------------------------------------------------------------------------
@@ -2668,34 +2810,96 @@ function requireReady(): boolean {
  * A book row is now a route into the terminal, where the order type, bucket and
  * allocation are all visible before anything is signed.
  */
-function loadIntoTerminal(orderId: number, bucket: number) {
-  entry.side = "buy";
+function loadIntoTerminal(orderId: number, orderSide: number) {
+  // Trading against an ASK means buying; against a BID it means selling. The
+  // row used to force "buy" whichever side it was, which was right while the
+  // book only had asks in it.
+  entry.side = orderSide === 1 ? "sell" : "buy";
   entry.type = "limit";
   renderEntry();
 
+  // The visibility choice stays whatever the trader last set. Overwriting it
+  // from the row was a leftover from when the button carried a bucket: the row
+  // never knew anything about how this trader wants their size disclosed.
   const sel = el("targetOrder") as HTMLSelectElement | null;
   if (sel) sel.value = String(orderId);
-  const bucketSel = el("entryBucket") as HTMLSelectElement | null;
-  if (bucketSel) bucketSel.value = String(bucket);
 
   el("colEntry")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   (el("entryQty") as HTMLInputElement | null)?.focus();
 }
 
 /**
- * Withdraw — releases a hidden balance back to plaintext tokens.
+ * Take a balance out of VENUE ESCROW.
  *
- * This is the wrapper's unwrap path, and it is genuinely two transactions
- * because of what confidentiality costs. `requestUnwrap` locks the amount and
- * publishes ONLY a success flag: whether the balance covered it, never what the
- * balance was. `claimUnwrap` then releases the tokens against a gateway proof of
- * that flag. A single-call unwrap would have to reveal the balance to decide
- * whether it could succeed.
+ * This is where the proceeds of a sale actually sit. Settlement does not send
+ * anyone tokens: `fill` and `hit` move value between `escrowCash` and
+ * `escrowShares` inside the venue, as ciphertext, and it stays there until it
+ * is withdrawn. The contract has had `withdrawCash` / `withdrawShares` since
+ * the two-sided redeploy; nothing in the UI called them, so escrow could only
+ * be emptied by trading it away.
  *
- * Note what this does NOT withdraw: venue escrow. `DeferralVenue` has
- * depositCash and depositShares and no counterpart — there is no withdraw
- * function on the deployed contract, so escrow can only be released by
- * cancelling an order back into it. Adding one needs a redeploy.
+ * Asking for more than is held moves ZERO rather than reverting — the same
+ * branchless discipline as settlement, for the same reason: a revert would
+ * confirm the size of a balance the venue is not supposed to disclose. So the
+ * balance shown above the form is the honest guide, and the result is read back
+ * from the escrow tile rather than announced here.
+ */
+async function onEscrowWithdraw(e: Event) {
+  e.preventDefault();
+  if (!requireReady()) return;
+
+  const raw = (el("escrowWithdrawAmount") as HTMLInputElement)?.value;
+  const amount = BigInt(raw || "0");
+  if (amount <= 0n) {
+    toast("error", "Amount must be positive");
+    return;
+  }
+
+  const leg = ((el("escrowWithdrawLeg") as HTMLSelectElement | null)?.value ?? "cash") as
+    | "cash"
+    | "shares";
+
+  const held = state.escrow[leg];
+  if (held !== null && amount > held) {
+    toast(
+      "error",
+      "More than you hold",
+      `Escrow holds ${fmt(held)} ${leg}. A larger withdrawal does not revert — it moves nothing.`,
+    );
+    return;
+  }
+
+  await asyncAction(
+    {
+      button: document.querySelector<HTMLButtonElement>(`[data-async="escrow-withdraw"]`),
+      label: `Withdraw ${leg} from escrow`,
+      async: true,
+      onSettled: refresh,
+    },
+    async () => {
+      const enc = await encryptInput(amount, CONFIG.venue);
+      const tx =
+        leg === "cash"
+          ? await state.venue!.withdrawCash(enc.handle, enc.proof)
+          : await state.venue!.withdrawShares(enc.handle, enc.proof);
+      const receipt = await tx.wait();
+      // The withdrawal minted a fresh handle, so the cached decryption is stale.
+      state.escrow[leg] = null;
+      return receipt;
+    },
+  );
+}
+
+/**
+ * Unwrap — releases a hidden balance back to plaintext tokens.
+ *
+ * The step AFTER escrow withdrawal, and a different boundary: escrow lives in
+ * the venue, the hidden balance lives in the ERC-7984 wrapper. It is genuinely
+ * two transactions because of what confidentiality costs. `requestUnwrap` locks
+ * the amount and publishes ONLY a success flag: whether the balance covered it,
+ * never what the balance was. `claimUnwrap` then releases the tokens against a
+ * gateway proof of that flag. A single-call unwrap would have to reveal the
+ * balance to decide whether it could succeed.
  */
 async function onWithdraw(e: Event) {
   e.preventDefault();
@@ -2799,7 +3003,7 @@ document.addEventListener("click", (e) => {
 
   const tradeBtn = t.closest?.("[data-trade]") as HTMLButtonElement | null;
   if (tradeBtn) {
-    loadIntoTerminal(Number(tradeBtn.dataset.trade), Number(tradeBtn.dataset.bucket));
+    loadIntoTerminal(Number(tradeBtn.dataset.trade), Number(tradeBtn.dataset.side));
     return;
   }
 
@@ -2908,6 +3112,7 @@ $("connect").addEventListener("click", () => connect().catch((e) => banner(e.mes
 $("disconnect").addEventListener("click", () => disconnect().catch((e) => banner(e.message, "error")));
 $("wrapForm").addEventListener("submit", (e) => void onWrap(e));
 el("withdrawForm")?.addEventListener("submit", (e) => void onWithdraw(e));
+el("escrowWithdrawForm")?.addEventListener("submit", (e) => void onEscrowWithdraw(e));
 $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
 
 // --- instrument selector
@@ -2918,7 +3123,7 @@ $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
       (i, idx) => `<option value="${idx}">${escapeHtml(pairLabel(i))}</option>`,
     ).join("");
     sel.title =
-      "All three instruments are deployed and share one IdentityRegistry. The order book is shared: DeferralVenue.Order carries no instrument field, so orders are not separated by pair.";
+      "All three instruments are deployed and share one IdentityRegistry. Each has its own book: DeferralVenue.Order carries a plaintext instrument index, so orders and prints are separated by pair.";
     sel.addEventListener("change", () => {
       state.instrument = INSTRUMENTS[Number(sel.value)] ?? INSTRUMENTS[0];
       for (const id of ["bondSymbol", "withdrawSymbol"]) {

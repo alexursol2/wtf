@@ -17,6 +17,9 @@ import { network } from "hardhat";
 import { bootstrapNoxCompute, makeInputProof, buildHandle, NOX_COMPUTE_LOCAL, TEEType } from "../lib/nox-local.js";
 import type { Hex } from "viem";
 
+/** Instrument index into the frontend's INSTRUMENTS list. 0 = ACME30. */
+const INSTRUMENT = 0;
+
 const PRICE_SCALE = 10_000n;
 
 async function main() {
@@ -69,8 +72,7 @@ async function main() {
   // ---- post ----
   const q = await enc(maker.account.address);
   const p = await enc(maker.account.address);
-  const now = (await publicClient.getBlock()).timestamp;
-  await venue.write.postAsk([q.handle, p.handle, q.proof, p.proof, BigInt(now) + 3600n], {
+  await venue.write.postAsk([INSTRUMENT, q.handle, p.handle, q.proof, p.proof], {
     account: maker.account,
   });
   const order = (await venue.read.orders([0n])) as unknown as any[];

@@ -78,7 +78,7 @@ Because `crosses` is an unreadable `ebool`, an `allowPublicDecryption(price)` pl
 Instead:
 
 - **`reportTrade(fillId)`** is maker-only and publishes the price. The maker is the reporting entity, as in the real regime.
-- **`publishVolume(fillId)`** publishes the volume once the deferral has elapsed.
+- **`publishVolume(fillId)`** publishes the volume once the deferral has elapsed. The deferral is the contract constant `LIS_DEFERRAL`, **one hour**, not a per-trade choice: the taker declares a bucket and the contract turns it into `now` or `now + LIS_DEFERRAL`. A venue that let each trade name its own delay would be offering a schedule it does not enforce.
 
 This is *more* faithful to the regulation than automatic disclosure: post-trade transparency is an obligation on the reporting party to publish, not an automatic property of matching. Failing to report is a breach **visible to the regulator from the first block** — the auditor holds the quantity handle — but not preventable by the contract. Exactly like real life.
 
@@ -128,7 +128,7 @@ Selective disclosure, party by party. Note the two different mechanisms: fill vo
 **What we do NOT hide:**
 
 - that an address posted or filled an order — events are public
-- order timing and expiry — plaintext
+- order timing, side and instrument — plaintext (orders carry no lifetime at all; they rest until cancelled)
 - counterparty pairs
 - executed price — deliberately published at settlement
 - **the deferral flag** — declaring a fill large-in-scale announces it was large. Mirrors MiFIR, where the flag is public by design.
@@ -180,8 +180,12 @@ What this does and does not affect: settlement *between* parties is still exact 
 | Limit sell (resting) | `postAsk` | You become the maker and the reporting entity |
 | Limit buy (crossing) | `fill` | `Nox.ge(bid, price)` gates it; a non-crossing bid settles to **zero**, never reverts |
 | Limit buy (resting) | `postBid` | Escrows `qty × price ÷ 1e4` in cash |
-| Market buy | `fill` with a crossing bid | Debited `qty × ask ÷ 1e4`, never your bid, so bidding high does not overpay |
-| Market sell | `hit` with a minimal ask | Any resting bid clears it |
+| Market buy | `fill` bidding `reference + 2%` | Debited `qty × ask ÷ 1e4`, never your bid — the bid is only the ceiling |
+| Market sell | `hit` asking `reference − 2%` | The ask is the floor a resting bid must reach |
+
+**A market order carries a price collar, and it has to.** The book is dark, so "at market" cannot mean "whatever the other side says". It used to: a market buy sent an encrypted bid of `1e12`, which crosses *any* ask, and settlement then charged that ask in full; a market sell sent an ask of `1` and accepted any bid. The frontend now sends `reference × (1 ± 2%)` instead, which turns the contract's own crossing test into the collar. Outside the band the trade settles for **zero** — the same branchless outcome as an underfunded fill — so the UI decrypts the executed quantity afterwards (the taker holds a viewer grant on it) and says the trade did not execute rather than letting a no-op look like a fill.
+
+**A taker's unfilled remainder is rested, not dropped.** The contract fills `min(wanted, resting)`, so asking for more than the level holds is a partial fill. Once the executed quantity resolves, the frontend posts the difference as a resting order on the same side — an unfilled buy becomes a bid, an unfilled sell becomes an ask — at the price the order already committed to. What it will not do is guess: if the quantity has not resolved yet, it says so and rests nothing.
 
 In `hit` the shares leg moves **first**, and its success flag gates the cash release. Paying first and checking delivery afterwards would let an empty seller drain a bid's escrow, and no revert could undo it — the shortfall is a ciphertext nothing on-chain can read.
 
@@ -191,7 +195,7 @@ The **reporting entity is always the order's maker**, on both paths: who quoted 
 
 **Circuit breakers are live.** `setPaused` / `setFillFrozen` are auditor-only and covered by tests. Both act on plaintext state deliberately: gating settlement on an encrypted flag would silently zero trades rather than stopping them. Pausing halts *new* orders and fills — it cannot reverse a settled trade, because settlement has already moved encrypted balances and there is no un-transfer. Freezing a fill therefore blocks its **disclosure**, not its economics.
 
-**Escrow now has a withdrawal.** `withdrawCash` / `withdrawShares` are the counterpart to the deposits; previously value could enter escrow and only leave by being traded away. Over-withdrawing moves zero rather than reverting, for the usual reason — a revert would confirm the size of a balance the venue cannot otherwise disclose. *The UI does not call these yet;* its Withdraw button drives the wrapper's unwrap.
+**Escrow has a withdrawal, and the UI calls it.** `withdrawCash` / `withdrawShares` are the counterpart to the deposits; previously value could enter escrow and only leave by being traded away. This matters for the obvious question — *where does the money go when I sell?* Settlement sends nobody any tokens: it moves ciphertext between `escrowCash` and `escrowShares` inside the venue, and it stays there until it is withdrawn. The wallet panel now has a **Withdraw from escrow** form for that, separate from **Unwrap**, which is the later step at the wrapper's custody boundary. Over-withdrawing moves zero rather than reverting, for the usual reason — a revert would confirm the size of a balance the venue cannot otherwise disclose — so the form checks against the decrypted balance first and says so.
 
 > **Picking this up on another machine?** `CONTINUE.md` has the full setup, the env vars that are not in git, the redeploy/re-seed runbook, and the traps worth knowing before you touch anything.
 

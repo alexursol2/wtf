@@ -8,10 +8,10 @@
   "cashToken": "0xb956f6651ec9d7d53c89ae4fb3068988f660b4db",
   "sharesWrapper": "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
   "cashWrapper": "0x89ef295d85401890736e9b07e7498e4b77531e63",
-  "venue": "0x97239e7f58ff1795991949961deb32794422eaf8",
+  "venue": "0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23",
   "auditor": "0xACc8D0072bB98eA0764704D1CA585140Fa981cc7",
   "priceScale": 10000,
-  "lisDeferralSeconds": 90,
+  "lisDeferralSeconds": 3600,
   "wrappersDeployedAt": "2026-07-30T15:32:37.157Z",
   "instrumentWrappers": {
     "AAPL.rwa": {
@@ -30,7 +30,11 @@
     {
       "address": "0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569",
       "retiredAt": "2026-07-31T21:28:22.111Z"
+    },
+    {
+      "address": "0x97239e7f58ff1795991949961deb32794422eaf8",
+      "retiredAt": "2026-07-31T22:07:39.038Z"
     }
   ],
-  "venueDeployedAt": "2026-07-31T21:28:22.112Z"
+  "venueDeployedAt": "2026-07-31T22:07:39.039Z"
 }

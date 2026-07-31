@@ -2,11 +2,27 @@
  * Builds a real two-sided book on a freshly deployed venue.
  *
  * A redeploy starts empty — orders and fills live in the venue's own arrays —
- * so this stands the demo back up: bids and asks in every instrument, then a
- * trade on each side of the book so both paths have printed at least once.
+ * so this stands the demo back up: a LADDER of bids and asks in every
+ * instrument, from both accounts, and then a trade on each side of each book so
+ * every instrument has printed and has a last price.
  *
- * The instrument is now a PLAINTEXT field on the order, so nothing has to be
- * recorded off-chain any more. The frontend reads it directly.
+ * Three properties are deliberate:
+ *
+ *  - Both accounts quote BOTH SIDES. A book where one address holds every ask
+ *    and the other every bid is not a book, it is two queues, and whichever
+ *    account you connect as can only ever see one of them (the venue rejects a
+ *    self-fill, so your own orders are not tradable by you).
+ *
+ *  - The levels sit INSIDE the 2% collar the frontend sends for a market order.
+ *    A level further out than that is unreachable at market, which looks like a
+ *    broken button rather than a working price guard.
+ *
+ *  - The seeded trades are PARTIAL, and their orders are reopened afterwards.
+ *    A partially filled order resting with a remainder is the case the UI is
+ *    built around, so the demo should contain one from the first minute.
+ *
+ * The instrument is a PLAINTEXT field on the order, so nothing has to be
+ * recorded off-chain. The frontend reads it directly.
  *
  *   npx hardhat run scripts/seed-book.ts --network sepolia
  */
@@ -17,29 +33,96 @@ import { createViemHandleClient } from "@iexec-nox/handle";
 import { loadEnv, roleWalletClient } from "../lib/env.js";
 import type { Hex } from "viem";
 
-/** Index into the frontend's INSTRUMENTS array. */
-const ACME30 = 0;
-const AAPL = 1;
-const TSLA = 2;
+type Who = "maker" | "taker";
 
-const ASKS = [
-  { inst: ACME30, qty: 1_000n, price: 987_500n },
-  { inst: ACME30, qty: 2_500n, price: 989_000n },
-  { inst: AAPL, qty: 1_200n, price: 2_284_000n },
-  { inst: AAPL, qty: 800n, price: 2_291_500n },
-  { inst: TSLA, qty: 600n, price: 4_121_500n },
+interface Level {
+  qty: bigint;
+  price: bigint;
+  from: Who;
+}
+
+interface Book {
+  /** Index into the frontend's INSTRUMENTS array. Order is load-bearing. */
+  inst: number;
+  symbol: string;
+  /** Offers, best (cheapest) first. */
+  asks: Level[];
+  /** Bids, best (dearest) first. */
+  bids: Level[];
+  /** Sizes for the two seeded trades — smaller than the level, so both rest on. */
+  liftQty: bigint;
+  sellQty: bigint;
+}
+
+/**
+ * Prices are scaled by PRICE_SCALE (1e4) and sit within ~1% of the indicative
+ * level in `frontend/src/reference.ts`, which keeps every level reachable by a
+ * market order inside its collar.
+ */
+const BOOKS: Book[] = [
+  {
+    inst: 0,
+    symbol: "ACME30",
+    asks: [
+      { qty: 1_000n, price: 988_000n, from: "maker" },
+      { qty: 2_500n, price: 989_500n, from: "taker" },
+      { qty: 4_000n, price: 991_000n, from: "maker" },
+    ],
+    bids: [
+      { qty: 1_500n, price: 986_500n, from: "taker" },
+      { qty: 3_000n, price: 985_000n, from: "maker" },
+      { qty: 5_000n, price: 983_500n, from: "taker" },
+    ],
+    liftQty: 400n,
+    sellQty: 600n,
+  },
+  {
+    inst: 1,
+    symbol: "AAPL.rwa",
+    asks: [
+      { qty: 1_200n, price: 2_286_000n, from: "maker" },
+      { qty: 800n, price: 2_291_500n, from: "taker" },
+      { qty: 2_000n, price: 2_298_000n, from: "maker" },
+    ],
+    bids: [
+      { qty: 900n, price: 2_281_000n, from: "taker" },
+      { qty: 1_600n, price: 2_275_000n, from: "maker" },
+      { qty: 2_400n, price: 2_268_000n, from: "taker" },
+    ],
+    liftQty: 500n,
+    sellQty: 300n,
+  },
+  {
+    inst: 2,
+    symbol: "TSLA.rwa",
+    asks: [
+      { qty: 600n, price: 4_124_000n, from: "maker" },
+      { qty: 1_100n, price: 4_132_000n, from: "taker" },
+      { qty: 1_800n, price: 4_145_000n, from: "maker" },
+    ],
+    bids: [
+      { qty: 400n, price: 4_118_000n, from: "taker" },
+      { qty: 1_000n, price: 4_110_000n, from: "maker" },
+      { qty: 1_500n, price: 4_098_000n, from: "taker" },
+    ],
+    liftQty: 250n,
+    sellQty: 150n,
+  },
 ];
 
-const BIDS = [
-  { inst: ACME30, qty: 1_500n, price: 986_000n },
-  { inst: AAPL, qty: 900n, price: 2_278_000n },
-  { inst: TSLA, qty: 400n, price: 4_110_000n },
-];
+/**
+ * Escrow to self-declare before posting.
+ *
+ * Generous on purpose. Escrow is branchless: an underfunded order escrows zero
+ * and then settles for zero, silently, because a revert would leak the
+ * shortfall — so an under-funded seeding run produces a book that looks right
+ * and trades for nothing.
+ */
+const SHARE_FUNDING = 500_000n;
+const CASH_FUNDING = 50_000_000_000n;
 
-const SHARE_FUNDING = 200_000n;
-const CASH_FUNDING = 20_000_000_000n;
-const EXPIRY_DAYS = 3650n;
-const STANDARD = 0; // publishes immediately, so the demo tape fills at once
+/** Publishes immediately, so the demo tape fills without waiting out an hour. */
+const STANDARD = 0;
 
 async function main() {
   loadEnv();
@@ -54,9 +137,15 @@ async function main() {
   const venue = await viem.getContractAt("DeferralVenue", d.venue);
   console.log(`venue ${d.venue}\n`);
 
-  const hcMaker = await createViemHandleClient(roleWalletClient("MAKER", chainId) as any);
-  const hcTaker = await createViemHandleClient(roleWalletClient("TAKER", chainId) as any);
+  const clients: Record<Who, any> = { maker, taker };
+  const handles: Record<Who, any> = {
+    maker: await createViemHandleClient(roleWalletClient("MAKER", chainId) as any),
+    taker: await createViemHandleClient(roleWalletClient("TAKER", chainId) as any),
+  };
 
+  // Nonces are tracked locally: every call below is sent without waiting for the
+  // previous one from the SAME account to be mined, and a hosted RPC's pending
+  // count lags enough to hand out the same nonce twice.
   const nonces = new Map<string, number>();
   for (const c of [maker, taker]) {
     nonces.set(
@@ -64,7 +153,8 @@ async function main() {
       await publicClient.getTransactionCount({ address: c.account.address, blockTag: "pending" }),
     );
   }
-  const n = (c: any) => {
+  const n = (who: Who) => {
+    const c = clients[who];
     const cur = nonces.get(c.account.address)!;
     nonces.set(c.account.address, cur + 1);
     return { nonce: cur, account: c.account };
@@ -77,81 +167,100 @@ async function main() {
     return r;
   };
 
-  const enc = async (hc: any, v: bigint) => {
-    const { handle, handleProof } = await hc.encryptInput(v, "uint256", d.venue as Hex);
+  const enc = async (who: Who, v: bigint) => {
+    const { handle, handleProof } = await handles[who].encryptInput(v, "uint256", d.venue as Hex);
     return { handle: handle as Hex, proof: handleProof as Hex };
   };
 
-  // ---- escrow. Both parties need both legs: each takes one side of the book.
+  // ---- escrow. Both parties need both legs: each takes both sides of the book.
   console.log("funding escrow…");
-  const ms = await enc(hcMaker, SHARE_FUNDING);
-  await send("maker depositShares", await venue.write.depositShares([ms.handle, ms.proof], n(maker)));
-  const mc = await enc(hcMaker, CASH_FUNDING);
-  await send("maker depositCash", await venue.write.depositCash([mc.handle, mc.proof], n(maker)));
-  const ts = await enc(hcTaker, SHARE_FUNDING);
-  await send("taker depositShares", await venue.write.depositShares([ts.handle, ts.proof], n(taker)));
-  const tc = await enc(hcTaker, CASH_FUNDING);
-  await send("taker depositCash", await venue.write.depositCash([tc.handle, tc.proof], n(taker)));
-
-  const latest = await publicClient.getBlock();
-  const expiry = BigInt(latest.timestamp) + EXPIRY_DAYS * 86_400n;
-
-  // ---- asks from the maker
-  console.log("\nasks (maker sells)…");
-  const askIds: bigint[] = [];
-  for (const a of ASKS) {
-    const q = await enc(hcMaker, a.qty);
-    const p = await enc(hcMaker, a.price);
-    const id = (await venue.read.ordersCount()) as bigint;
-    await send(
-      `postAsk inst ${a.inst}  ${a.qty} @ ${a.price}  -> #${id}`,
-      await venue.write.postAsk([a.inst, q.handle, p.handle, q.proof, p.proof, expiry], n(maker)),
-    );
-    askIds.push(id);
+  for (const who of ["maker", "taker"] as const) {
+    const s = await enc(who, SHARE_FUNDING);
+    await send(`${who} depositShares`, await venue.write.depositShares([s.handle, s.proof], n(who)));
+    const c = await enc(who, CASH_FUNDING);
+    await send(`${who} depositCash`, await venue.write.depositCash([c.handle, c.proof], n(who)));
   }
 
-  // ---- bids from the taker
-  console.log("\nbids (taker buys)…");
-  const bidIds: bigint[] = [];
-  for (const b of BIDS) {
-    const q = await enc(hcTaker, b.qty);
-    const p = await enc(hcTaker, b.price);
-    const id = (await venue.read.ordersCount()) as bigint;
-    await send(
-      `postBid inst ${b.inst}  ${b.qty} @ ${b.price}  -> #${id}`,
-      await venue.write.postBid([b.inst, q.handle, p.handle, q.proof, p.proof, expiry], n(taker)),
-    );
-    bidIds.push(id);
+  // ---- the ladders
+  const askIds = new Map<number, { id: bigint; from: Who }[]>();
+  const bidIds = new Map<number, { id: bigint; from: Who }[]>();
+
+  for (const b of BOOKS) {
+    console.log(`\n${b.symbol} — asks…`);
+    const asks: { id: bigint; from: Who }[] = [];
+    for (const a of b.asks) {
+      const q = await enc(a.from, a.qty);
+      const p = await enc(a.from, a.price);
+      const id = (await venue.read.ordersCount()) as bigint;
+      await send(
+        `postAsk ${a.from} ${a.qty} @ ${a.price} -> #${id}`,
+        await venue.write.postAsk([b.inst, q.handle, p.handle, q.proof, p.proof], n(a.from)),
+      );
+      asks.push({ id, from: a.from });
+    }
+    askIds.set(b.inst, asks);
+
+    console.log(`${b.symbol} — bids…`);
+    const bids: { id: bigint; from: Who }[] = [];
+    for (const bid of b.bids) {
+      const q = await enc(bid.from, bid.qty);
+      const p = await enc(bid.from, bid.price);
+      const id = (await venue.read.ordersCount()) as bigint;
+      await send(
+        `postBid ${bid.from} ${bid.qty} @ ${bid.price} -> #${id}`,
+        await venue.write.postBid([b.inst, q.handle, p.handle, q.proof, p.proof], n(bid.from)),
+      );
+      bids.push({ id, from: bid.from });
+    }
+    bidIds.set(b.inst, bids);
   }
 
-  // ---- one trade on each side, so both paths have printed
-  console.log("\ntrades…");
+  // ---- one trade on each side of every book
+  //
+  // The counterparty is always the OTHER account: `fill` and `hit` both reject a
+  // self-trade, since with maker == taker both legs of a transfer resolve to one
+  // storage slot and the second write silently wins.
+  const other = (w: Who): Who => (w === "maker" ? "taker" : "maker");
 
-  // taker lifts an ask
-  {
-    const bid = await enc(hcTaker, 990_000n);
-    const q = await enc(hcTaker, 400n);
-    const fillId = (await venue.read.fillsCount()) as bigint;
-    await send(
-      `fill ask #${askIds[0]}  -> trade #${fillId}`,
-      await venue.write.fill([askIds[0], bid.handle, q.handle, bid.proof, q.proof, STANDARD], n(taker)),
-    );
-    await send(`reportTrade #${fillId}`, await venue.write.reportTrade([fillId], n(maker)));
-    await send(`publishVolume #${fillId}`, await venue.write.publishVolume([fillId], n(maker)));
-  }
+  for (const b of BOOKS) {
+    console.log(`\n${b.symbol} — trades…`);
 
-  // maker sells into a bid — the path that only exists now
-  {
-    const ask = await enc(hcMaker, 2_270_000n);
-    const q = await enc(hcMaker, 300n);
-    const fillId = (await venue.read.fillsCount()) as bigint;
-    await send(
-      `hit bid #${bidIds[1]}  -> trade #${fillId}`,
-      await venue.write.hit([bidIds[1], ask.handle, q.handle, ask.proof, q.proof, STANDARD], n(maker)),
-    );
-    // The bid's MAKER is the reporting entity, and that is the taker here.
-    await send(`reportTrade #${fillId}`, await venue.write.reportTrade([fillId], n(taker)));
-    await send(`publishVolume #${fillId}`, await venue.write.publishVolume([fillId], n(taker)));
+    // A buyer lifts the best offer. The bid is set above the ask so it crosses;
+    // settlement still charges the ASK, so bidding up does not overpay.
+    const bestAsk = askIds.get(b.inst)![0];
+    {
+      const who = other(bestAsk.from);
+      const bid = await enc(who, b.asks[0].price + 10_000n);
+      const q = await enc(who, b.liftQty);
+      const fillId = (await venue.read.fillsCount()) as bigint;
+      await send(
+        `fill ask #${bestAsk.id} for ${b.liftQty} -> trade #${fillId}`,
+        await venue.write.fill([bestAsk.id, bid.handle, q.handle, bid.proof, q.proof, STANDARD], n(who)),
+      );
+      // The reporting entity is the ORDER'S maker, whichever side lifted it.
+      await send(`reportTrade #${fillId}`, await venue.write.reportTrade([fillId], n(bestAsk.from)));
+      await send(`publishVolume #${fillId}`, await venue.write.publishVolume([fillId], n(bestAsk.from)));
+      // A fill parks the order in PendingResolution: the contract cannot read
+      // its own encrypted result, so only the maker can clear it. Left pending,
+      // the remainder would drop out of the book the demo is meant to show.
+      await send(`reopen #${bestAsk.id}`, await venue.write.reopen([bestAsk.id], n(bestAsk.from)));
+    }
+
+    // A seller hits the best bid — the path that only exists on a two-sided book.
+    const bestBid = bidIds.get(b.inst)![0];
+    {
+      const who = other(bestBid.from);
+      const ask = await enc(who, b.bids[0].price - 10_000n);
+      const q = await enc(who, b.sellQty);
+      const fillId = (await venue.read.fillsCount()) as bigint;
+      await send(
+        `hit bid #${bestBid.id} for ${b.sellQty} -> trade #${fillId}`,
+        await venue.write.hit([bestBid.id, ask.handle, q.handle, ask.proof, q.proof, STANDARD], n(who)),
+      );
+      await send(`reportTrade #${fillId}`, await venue.write.reportTrade([fillId], n(bestBid.from)));
+      await send(`publishVolume #${fillId}`, await venue.write.publishVolume([fillId], n(bestBid.from)));
+      await send(`reopen #${bestBid.id}`, await venue.write.reopen([bestBid.id], n(bestBid.from)));
+    }
   }
 
   console.log(`\norders ${await venue.read.ordersCount()}   fills ${await venue.read.fillsCount()}`);

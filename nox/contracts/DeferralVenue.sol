@@ -72,7 +72,6 @@ contract DeferralVenue {
         /// Cash still escrowed against a Bid. Unused, and zero, for an Ask.
         euint256 cashRemaining;
         euint256 price; // scaled by PRICE_SCALE
-        uint64 expiry;
         OrderState state;
     }
 
@@ -93,7 +92,16 @@ contract DeferralVenue {
     // ------------------------------------------------------------------
 
     uint256 public constant PRICE_SCALE = 1e4; // 98.7500 -> 987500
-    uint64 public constant LIS_DEFERRAL = 90; // demo value; caption on screen
+
+    /// How long a large-in-scale trade may keep its SIZE off the tape.
+    ///
+    /// One hour, which is the deferral this venue offers. MiFIR grants far
+    /// longer windows for large-in-scale prints - end of day, and up to four
+    /// weeks for some non-equity classes - but an hour is a length a demo can
+    /// actually wait out while still being a real deferral rather than a
+    /// blink. The price is public the moment the trade is reported either way;
+    /// this timer only gates the volume.
+    uint64 public constant LIS_DEFERRAL = 3600;
 
     IIdentityRegistry public immutable identityRegistry;
     address public immutable auditor;
@@ -124,7 +132,7 @@ contract DeferralVenue {
     bool public paused;
     mapping(uint256 => bool) public fillFrozen;
 
-    event OrderPosted(uint256 indexed id, address indexed maker, uint64 expiry);
+    event OrderPosted(uint256 indexed id, address indexed maker, Side side, uint8 instrument);
     event FillRecorded(uint256 indexed fillId, uint256 indexed orderId, address indexed taker, Bucket bucket);
     event TradeReported(uint256 indexed fillId);
     event VolumePublished(uint256 indexed fillId);
@@ -206,17 +214,26 @@ contract DeferralVenue {
     // Maker side
     // ------------------------------------------------------------------
 
+    /**
+     * A resting ASK: the maker escrows shares and waits for a buyer.
+     *
+     * Orders rest until they are cancelled. There is no lifetime parameter,
+     * and that is deliberate rather than an omission: the venue used to carry
+     * a `uint64 expiry` that every caller set to a date past any horizon that
+     * mattered, so it never expired anything and only ever showed up as a
+     * meaningless timestamp in the book. A time-in-force worth having would
+     * need someone to sweep expired orders and return their escrow, which no
+     * one does here - an unfilled order is cancelled, not waited out.
+     */
     function postAsk(
         uint8 instrument,
         externalEuint256 encQty,
         externalEuint256 encPrice,
         bytes calldata qtyProof,
-        bytes calldata priceProof,
-        uint64 expiry
+        bytes calldata priceProof
     ) external returns (uint256 id) {
         require(!paused, "paused");
         require(identityRegistry.isVerified(msg.sender), "not verified");
-        require(expiry > block.timestamp, "expiry in past");
 
         euint256 qty = Nox.fromExternal(encQty, qtyProof);
         euint256 price = Nox.fromExternal(encPrice, priceProof);
@@ -237,7 +254,6 @@ contract DeferralVenue {
                 qtyRemaining: escrowed,
                 cashRemaining: euint256.wrap(0),
                 price: price,
-                expiry: expiry,
                 state: OrderState.Open
             })
         );
@@ -249,7 +265,7 @@ contract DeferralVenue {
         Nox.allowThis(price);
         Nox.addViewer(price, msg.sender);
 
-        emit OrderPosted(id, msg.sender, expiry);
+        emit OrderPosted(id, msg.sender, Side.Ask, instrument);
     }
 
     /**
@@ -271,12 +287,10 @@ contract DeferralVenue {
         externalEuint256 encQty,
         externalEuint256 encPrice,
         bytes calldata qtyProof,
-        bytes calldata priceProof,
-        uint64 expiry
+        bytes calldata priceProof
     ) external returns (uint256 id) {
         require(!paused, "paused");
         require(identityRegistry.isVerified(msg.sender), "not verified");
-        require(expiry > block.timestamp, "expiry in past");
 
         euint256 qty = Nox.fromExternal(encQty, qtyProof);
         euint256 price = Nox.fromExternal(encPrice, priceProof);
@@ -299,7 +313,6 @@ contract DeferralVenue {
                 qtyRemaining: qty,
                 cashRemaining: escrowedCash,
                 price: price,
-                expiry: expiry,
                 state: OrderState.Open
             })
         );
@@ -313,7 +326,7 @@ contract DeferralVenue {
         Nox.allowThis(price);
         Nox.addViewer(price, msg.sender);
 
-        emit OrderPosted(id, msg.sender, expiry);
+        emit OrderPosted(id, msg.sender, Side.Bid, instrument);
     }
 
     // ------------------------------------------------------------------
@@ -332,7 +345,6 @@ contract DeferralVenue {
         Order storage o = orders[id];
         require(o.side == Side.Ask, "not an ask");
         require(o.state == OrderState.Open, "not fillable");
-        require(block.timestamp < o.expiry, "expired");
         require(identityRegistry.isVerified(msg.sender), "not verified");
 
         // A self-fill is not merely a wash trade, it is a balance bug: with
@@ -447,7 +459,6 @@ contract DeferralVenue {
         Order storage o = orders[id];
         require(o.side == Side.Bid, "not a bid");
         require(o.state == OrderState.Open, "not fillable");
-        require(block.timestamp < o.expiry, "expired");
         require(identityRegistry.isVerified(msg.sender), "not verified");
         // Same storage-collision hazard as fill(): with msg.sender == o.maker
         // both sides of a leg resolve to one slot and the second write wins.

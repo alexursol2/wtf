@@ -17,9 +17,11 @@ export const VENUE_ABI = [
   "function withdrawCash(bytes32 encAmount, bytes proof) external",
   "function withdrawShares(bytes32 encAmount, bytes proof) external",
 
-  // maker — both sides of the book rest here
-  "function postAsk(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof, uint64 expiry) external returns (uint256)",
-  "function postBid(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof, uint64 expiry) external returns (uint256)",
+  // maker — both sides of the book rest here. There is no expiry parameter:
+  // orders rest until cancelled, and the venue no longer carries a lifetime it
+  // never enforced.
+  "function postAsk(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof) external returns (uint256)",
+  "function postBid(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof) external returns (uint256)",
   "function cancel(uint256 id) external",
   "function reopen(uint256 id) external",
 
@@ -43,7 +45,7 @@ export const VENUE_ABI = [
   // way, is not the secret — the size and the price are. That is what makes
   // separate books possible at all, since an encrypted tag could never be
   // compared.
-  "function orders(uint256) view returns (address maker, uint8 side, uint8 instrument, bytes32 qtyRemaining, bytes32 cashRemaining, bytes32 price, uint64 expiry, uint8 state)",
+  "function orders(uint256) view returns (address maker, uint8 side, uint8 instrument, bytes32 qtyRemaining, bytes32 cashRemaining, bytes32 price, uint8 state)",
   "function fills(uint256) view returns (address maker, address taker, uint8 instrument, bytes32 qty, bytes32 price, uint8 bucket, uint64 volumeDeferredUntil, bool reported, bool volumePublished)",
   "function PRICE_SCALE() view returns (uint256)",
   "function LIS_DEFERRAL() view returns (uint64)",
@@ -59,7 +61,7 @@ export const VENUE_ABI = [
   "function setFillFrozen(uint256 fillId, bool value) external",
 
   // events — used to enumerate, since arrays have no length getter here
-  "event OrderPosted(uint256 indexed id, address indexed maker, uint64 expiry)",
+  "event OrderPosted(uint256 indexed id, address indexed maker, uint8 side, uint8 instrument)",
   "event FillRecorded(uint256 indexed fillId, uint256 indexed orderId, address indexed taker, uint8 bucket)",
   "event TradeReported(uint256 indexed fillId)",
   "event VolumePublished(uint256 indexed fillId)",

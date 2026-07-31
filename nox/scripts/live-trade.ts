@@ -24,6 +24,9 @@ import { createViemHandleClient } from "@iexec-nox/handle";
 import { loadEnv, roleWalletClient, isTransient } from "../lib/env.js";
 import type { Hex } from "viem";
 
+/** Instrument index into the frontend's INSTRUMENTS list. 0 = ACME30. */
+const INSTRUMENT = 0;
+
 const ASK_QTY = 1_000n;
 const ASK_PRICE = 987_500n; // 98.7500
 const BID_PRICE = 990_000n; // 99.0000 — crosses
@@ -221,15 +224,11 @@ async function main() {
   // ---- post -------------------------------------------------------------
   const q = await enc(hcMaker, maker, ASK_QTY);
   const p = await enc(hcMaker, maker, ASK_PRICE);
-  const now = (await publicClient.getBlock()).timestamp;
   const orderId = BigInt(Number(await venue.read.ordersCount()));
 
   await send(
     `maker postAsk ${ASK_QTY} @ ${ASK_PRICE}`,
-    await venue.write.postAsk(
-      [q.handle, p.handle, q.proof, p.proof, BigInt(now) + 3600n],
-      n(maker),
-    ),
+    await venue.write.postAsk([INSTRUMENT, q.handle, p.handle, q.proof, p.proof], n(maker)),
   );
 
   // ---- fill -------------------------------------------------------------
