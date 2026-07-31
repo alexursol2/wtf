@@ -81,7 +81,7 @@
 
             <div class="grid2">
               <div class="tile">
-                <label>Escrowed cash</label>
+                <label>Escrowed <span class="leg-cash">&#36;</span></label>
                 <div id="cashValue" class="plain">—</div>
                 <div class="row-title">
                   <span id="cashLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
@@ -90,7 +90,7 @@
                 <div id="cashHandle" class="cipher"></div>
               </div>
               <div class="tile">
-                <label>Escrowed shares</label>
+                <label>Escrowed <span id="escrowShareSym">shares</span></label>
                 <div id="sharesValue" class="plain">—</div>
                 <div class="row-title">
                   <span id="sharesLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
@@ -112,7 +112,7 @@
                 <div class="field">
                   <label for="escrowWithdrawLeg">Balance</label>
                   <select id="escrowWithdrawLeg">
-                    <option value="cash">Escrowed cash</option>
+                    <option value="cash">Escrowed &#36;</option>
                     <option value="shares">Escrowed shares</option>
                   </select>
                 </div>
@@ -237,8 +237,8 @@
             </div>
 
             <div class="field">
-              <label for="entryNotional">Amount <span id="notionalUnit" class="mono">USD</span></label>
-              <input id="entryNotional" type="number" min="1" step="1" placeholder="4,937,500" />
+              <label for="entryNotional">Total <span id="notionalUnit" class="mono">&#36;</span></label>
+              <input id="entryNotional" type="number" min="0" step="1" placeholder="50" />
             </div>
 
             <div class="alloc">
@@ -285,7 +285,7 @@
                 <span id="priceLabel">Target price</span>
                 <span id="priceHint" class="mono"></span>
               </label>
-              <input id="entryPrice" type="number" min="1" step="1" placeholder="987500" required />
+              <input id="entryPrice" type="number" min="0" step="0.01" placeholder="25.00" required />
             </div>
 
             <!-- The collar a market order transacts inside. Shown because the

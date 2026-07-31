@@ -62,51 +62,51 @@ interface Book {
 const BOOKS: Book[] = [
   {
     inst: 0,
-    symbol: "ACME30",
+    symbol: 'ACME30',
     asks: [
-      { qty: 1_000n, price: 988_000n, from: "maker" },
-      { qty: 2_500n, price: 989_500n, from: "taker" },
-      { qty: 4_000n, price: 991_000n, from: "maker" },
+      { qty: 8n, price: 252_000n, from: 'maker' },   // $25.20
+      { qty: 12n, price: 254_000n, from: 'taker' },  // $25.40
+      { qty: 20n, price: 256_000n, from: 'maker' },  // $25.60
     ],
     bids: [
-      { qty: 1_500n, price: 986_500n, from: "taker" },
-      { qty: 3_000n, price: 985_000n, from: "maker" },
-      { qty: 5_000n, price: 983_500n, from: "taker" },
+      { qty: 10n, price: 248_000n, from: 'taker' },  // $24.80
+      { qty: 15n, price: 246_000n, from: 'maker' },  // $24.60
+      { qty: 25n, price: 244_000n, from: 'taker' },  // $24.40
     ],
-    liftQty: 400n,
-    sellQty: 600n,
+    liftQty: 2n,
+    sellQty: 3n,
   },
   {
     inst: 1,
-    symbol: "AAPL.rwa",
+    symbol: 'AAPL.rwa',
     asks: [
-      { qty: 1_200n, price: 2_286_000n, from: "maker" },
-      { qty: 800n, price: 2_291_500n, from: "taker" },
-      { qty: 2_000n, price: 2_298_000n, from: "maker" },
+      { qty: 6n, price: 504_000n, from: 'maker' },   // $50.40
+      { qty: 10n, price: 508_000n, from: 'taker' },  // $50.80
+      { qty: 16n, price: 512_000n, from: 'maker' },  // $51.20
     ],
     bids: [
-      { qty: 900n, price: 2_281_000n, from: "taker" },
-      { qty: 1_600n, price: 2_275_000n, from: "maker" },
-      { qty: 2_400n, price: 2_268_000n, from: "taker" },
+      { qty: 8n, price: 496_000n, from: 'taker' },   // $49.60
+      { qty: 12n, price: 492_000n, from: 'maker' },  // $49.20
+      { qty: 20n, price: 488_000n, from: 'taker' },  // $48.80
     ],
-    liftQty: 500n,
-    sellQty: 300n,
+    liftQty: 2n,
+    sellQty: 2n,
   },
   {
     inst: 2,
-    symbol: "TSLA.rwa",
+    symbol: 'TSLA.rwa',
     asks: [
-      { qty: 600n, price: 4_124_000n, from: "maker" },
-      { qty: 1_100n, price: 4_132_000n, from: "taker" },
-      { qty: 1_800n, price: 4_145_000n, from: "maker" },
+      { qty: 4n, price: 1_008_000n, from: 'maker' },  // $100.80
+      { qty: 8n, price: 1_016_000n, from: 'taker' },  // $101.60
+      { qty: 12n, price: 1_024_000n, from: 'maker' }, // $102.40
     ],
     bids: [
-      { qty: 400n, price: 4_118_000n, from: "taker" },
-      { qty: 1_000n, price: 4_110_000n, from: "maker" },
-      { qty: 1_500n, price: 4_098_000n, from: "taker" },
+      { qty: 5n, price: 992_000n, from: 'taker' },    // $99.20
+      { qty: 9n, price: 984_000n, from: 'maker' },    // $98.40
+      { qty: 14n, price: 976_000n, from: 'taker' },   // $97.60
     ],
-    liftQty: 250n,
-    sellQty: 150n,
+    liftQty: 1n,
+    sellQty: 2n,
   },
 ];
 
@@ -118,8 +118,8 @@ const BOOKS: Book[] = [
  * shortfall — so an under-funded seeding run produces a book that looks right
  * and trades for nothing.
  */
-const SHARE_FUNDING = 500_000n;
-const CASH_FUNDING = 50_000_000_000n;
+const SHARE_FUNDING = 2_000n;
+const CASH_FUNDING = 100_000n;
 
 /** Publishes immediately, so the demo tape fills without waiting out an hour. */
 const STANDARD = 0;

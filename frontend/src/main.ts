@@ -1349,7 +1349,7 @@ function renderBook() {
   const refEl = el("bookRef");
   if (refEl)
     refEl.textContent = last
-      ? `${state.instrument.symbol} · last ${unscale(last.price)}`
+      ? `${state.instrument.symbol} · last ${money(last.price)}`
       : `${state.instrument.symbol} · no prints yet`;
 
   if (!live.length) {
@@ -1544,7 +1544,7 @@ function renderTicker() {
 
     const priceCell =
       f.priceValue !== null
-        ? `<span class="tick-price">${fmt(f.priceValue)}</span>`
+        ? `<span class="tick-price">${money(f.priceValue)}</span>`
         : `<span class="tick-held">resolving…</span>`;
 
     let volCell: string;
@@ -1689,7 +1689,7 @@ function renderExecuted(isAuditor: boolean) {
 
       const price =
         f.pricePublic && f.priceValue !== null
-          ? `<strong class="mono">${unscale(f.priceValue)}</strong>`
+          ? `<strong class="mono">${money(f.priceValue)}</strong>`
           : `<span class="cipher">price sealed</span>`;
 
       const size = decrypted.has(f.qty)
@@ -2068,6 +2068,21 @@ function deferralLabel(): string {
 const fundingLeg = (): "cash" | "shares" => (entry.side === "buy" ? "cash" : "shares");
 
 /**
+ * What a leg is called on screen.
+ *
+ * "cash" is what the contract calls the mapping, and it stayed in the UI long
+ * after it stopped being useful there: on a screen full of prices in dollars,
+ * a balance labelled "cash" reads as a different thing from the money those
+ * prices are in. The share leg keeps the instrument's own symbol.
+ */
+const legLabel = (leg: "cash" | "shares") =>
+  leg === "cash" ? quoteSymbol() : state.instrument.symbol;
+
+/** Balances in the cash leg are money; in the share leg they are a count. */
+const legAmount = (leg: "cash" | "shares", v: bigint) =>
+  leg === "cash" ? `${quoteSymbol()}${fmt(v)}` : `${fmt(v)} ${state.instrument.symbol}`;
+
+/**
  * Spendable balance for the current side.
  *
  * Wallet FIRST, escrow as the fallback. Funding is automatic now — placing an
@@ -2117,13 +2132,47 @@ function referencePrice(): bigint {
   return lastPrint()?.price ?? state.instrument.indicative;
 }
 
-/** Scaled integer → human decimal, e.g. 987500 → "98.7500". */
+const priceScale = () => (state.priceScale === 0n ? 10_000n : state.priceScale);
+
+/**
+ * Scaled integer → money, e.g. 250000 → "25.00".
+ *
+ * Two decimals, not four. The contract keeps four so that a bond quoted in
+ * thirty-seconds still divides exactly, but nobody reads a price that way — and
+ * the extra digits were the main reason the screen looked like protocol output
+ * rather than a quote.
+ */
 function unscale(v: bigint): string {
-  const scale = state.priceScale === 0n ? 10000n : state.priceScale;
-  const whole = v / scale;
-  const frac = (v % scale).toString().padStart(scale.toString().length - 1, "0");
-  return `${whole}.${frac}`;
+  const s = priceScale();
+  const whole = v / s;
+  const cents = ((v % s) * 100n) / s;
+  return `${whole}.${cents.toString().padStart(2, "0")}`;
 }
+
+/** Money as typed → scaled integer. "25.5" → 255000 at 1e4. */
+function scalePrice(input: string): bigint {
+  const t = input.trim();
+  if (!t) return 0n;
+  const neg = t.startsWith("-");
+  const [wholeRaw, fracRaw = ""] = t.replace(/^[-+]/, "").split(".");
+  const s = priceScale();
+  const digits = s.toString().length - 1;
+  // Pad or truncate the fraction to the scale's precision. Truncating rather
+  // than rounding matters: rounding UP could push a limit through a price the
+  // user never agreed to.
+  const frac = (fracRaw + "0".repeat(digits)).slice(0, digits);
+  const value = BigInt(wholeRaw || "0") * s + BigInt(frac || "0");
+  return neg ? -value : value;
+}
+
+/** Reads the price field, which is denominated in money, not scaled units. */
+const typedPrice = (): bigint => scalePrice((el("entryPrice") as HTMLInputElement)?.value ?? "");
+
+/** The quote currency, for labels. */
+const quoteSymbol = () => (state.instrument.quote === "USD" ? "$" : state.instrument.quote);
+
+/** Money for display, with the currency symbol. */
+const money = (v: bigint) => `${quoteSymbol()}${unscale(v)}`;
 
 function renderMark() {
   const priceEl = el("markPrice");
@@ -2141,27 +2190,27 @@ function renderMark() {
   const kind = last ? "Last print" : "Indicative";
 
   if (labelEl) labelEl.textContent = kind;
-  priceEl.textContent = unscale(price);
+  priceEl.textContent = money(price);
   // The PRICE is public once reported, so quoting it is fine. Naming the fill it
   // came from is not: it would tie a published number back to one pair of
   // counterparties, which is more than the tape discloses.
   if (metaEl)
     metaEl.textContent = last
-      ? `${sym} · last traded · scaled ${fmt(price)}`
+      ? `${sym} · last traded`
       : `${sym} · reference level, nothing has printed yet`;
-  if (hintEl) hintEl.textContent = `${unscale(price)} → ${fmt(price)}`;
+  if (hintEl) hintEl.textContent = `per share, in ${quoteSymbol()}`;
 
   // Same reference wherever the instrument is named, so no panel quotes a
   // different number than its neighbour.
   const ordersRef = el("myOrdersRef");
-  if (ordersRef) ordersRef.textContent = `${sym} · ${kind.toLowerCase()} ${unscale(price)}`;
+  if (ordersRef) ordersRef.textContent = `${sym} · ${kind.toLowerCase()} ${money(price)}`;
 
   const bondMark = el("bondMark");
-  if (bondMark) bondMark.textContent = `${kind.toLowerCase()} ${unscale(price)}`;
+  if (bondMark) bondMark.textContent = `${kind.toLowerCase()} ${money(price)}`;
 
   // Seed the limit field so it is never empty and never wrong for the pair.
   const priceInput = el("entryPrice") as HTMLInputElement | null;
-  if (priceInput) priceInput.placeholder = price.toString();
+  if (priceInput) priceInput.placeholder = unscale(price);
 }
 
 function renderAllocSource() {
@@ -2173,7 +2222,7 @@ function renderAllocSource() {
   const { amount, source } = spendable();
 
   if (amount === null) {
-    srcEl.textContent = state.account ? `${leg} — resolving` : `${leg} — not connected`;
+    srcEl.textContent = state.account ? `${legLabel(leg)} — resolving` : `${legLabel(leg)} — not connected`;
     if (noteEl)
       noteEl.textContent = state.account
         ? "Balance has not resolved yet. Enter a quantity directly."
@@ -2181,11 +2230,11 @@ function renderAllocSource() {
     return;
   }
 
-  srcEl.textContent = `${fmt(amount)} ${leg}`;
+  srcEl.textContent = legAmount(leg, amount);
   if (noteEl)
     noteEl.textContent =
       source === "escrow"
-        ? `Sizing against escrowed ${leg}; no wallet balance is readable for this leg.`
+        ? `Sizing against escrowed ${legLabel(leg)}; no wallet balance is readable for this leg.`
         : entry.side === "buy"
           ? "Percentage of your wallet cash, converted at the reference price."
           : "Percentage of your wallet holding.";
@@ -2217,7 +2266,7 @@ function applyAllocation(pct: number) {
 
   // Buying: cash buys qty = cash × SCALE ÷ price. Prefer the typed limit, then
   // the last public print, then the instrument's indicative price.
-  const typed = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  const typed = typedPrice();
   const ref = typed > 0n ? typed : referencePrice();
   if (ref <= 0n) {
     const note = el("allocNote");
@@ -2260,7 +2309,7 @@ function executionPrice(): bigint {
     const ref = referencePrice();
     return entry.side === "buy" ? collarBuy(ref) : collarSell(ref);
   }
-  return BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  return typedPrice();
 }
 
 /** What the trade needs in the funding leg, at the price actually being used. */
@@ -2310,8 +2359,8 @@ function renderSafety() {
     const leg = fundingLeg();
     note.textContent =
       need > amount
-        ? `This order needs ${fmt(need)} ${leg} and your ${source} holds ${fmt(amount)}. It will be submitted, but an underfunded order settles for zero rather than failing.`
-        : `Commits ${fmt(need)} of ${fmt(amount)} ${leg}. Escrow is topped up automatically when you submit.`;
+        ? `This order needs ${legAmount(leg, need)} and your ${source} holds ${legAmount(leg, amount)}. It will be submitted, but an underfunded order settles for zero rather than failing.`
+        : `Commits ${legAmount(leg, need)} of ${legAmount(leg, amount)}. Escrow is topped up automatically when you submit.`;
   }
 }
 
@@ -2411,7 +2460,7 @@ function renderEntry() {
       const limit = buy ? collarBuy(referencePrice()) : collarSell(referencePrice());
       collarNote.textContent =
         `Executes within ${Number(COLLAR_BPS) / 100}% of the reference — ` +
-        `${buy ? "paying no more than" : "receiving no less than"} ${unscale(limit)}. ` +
+        `${buy ? "paying no more than" : "receiving no less than"} ${money(limit)}. ` +
         `Outside that band the trade settles for zero rather than at a bad price.`;
     } else {
       collarNote.textContent = "";
@@ -2463,7 +2512,7 @@ function renderEntry() {
   const unit = el("qtyUnit");
   if (unit) unit.textContent = state.instrument.symbol;
   const nUnit = el("notionalUnit");
-  if (nUnit) nUnit.textContent = state.instrument.quote;
+  if (nUnit) nUnit.textContent = quoteSymbol();
 
   renderTargetOptions();
   renderAllocSource();
@@ -2551,7 +2600,7 @@ async function ensureFunded(need: bigint): Promise<boolean> {
   const ok = await asyncAction(
     {
       button: el("entrySubmit") as HTMLButtonElement,
-      label: `Fund ${leg}`,
+      label: `Fund ${legLabel(leg)}`,
       async: true,
     },
     async () => {
@@ -2716,7 +2765,7 @@ async function onEntrySubmit(e: Event) {
   const steps: ReviewStep[] = [];
   if (needsTopUp) {
     steps.push({
-      label: `Fund escrow — ${fmt(withBuffer(have === null ? need : need - have))} ${leg}`,
+      label: `Fund escrow — ${legAmount(leg, withBuffer(have === null ? need : need - have))}`,
       detail:
         "Moves value into the venue so the order can settle. A separate transaction: your wallet asks for this FIRST, before the order itself.",
       contract: CONFIG.venue,
@@ -2725,8 +2774,8 @@ async function onEntrySubmit(e: Event) {
   steps.push({
     label:
       entry.side === "buy"
-        ? `Buy ${fmt(qty)} ${sym} at ${unscale(price)}${market ? " (market, 2% collar)" : ""}`
-        : `Sell ${fmt(qty)} ${sym} at ${unscale(price)}${market ? " (market, 2% collar)" : ""}`,
+        ? `Buy ${fmt(qty)} ${sym} at ${money(price)}${market ? " (market, 2% collar)" : ""}`
+        : `Sell ${fmt(qty)} ${sym} at ${money(price)}${market ? " (market, 2% collar)" : ""}`,
     detail: market
       ? "Takes resting liquidity. Settlement uses the RESTING price, and the collar is the worst price you accept — outside it the trade settles to zero rather than filling."
       : "Crosses if it meets a resting order; anything left over rests on the book as your own order.",
@@ -3025,9 +3074,19 @@ async function onWrap(e: Event) {
       const decimals: bigint = await bond.decimals();
       const amount = parseUnits(raw, Number(decimals));
 
-      // wrap() pulls via transferFrom, so the approval must be mined first.
-      const approval = await bond.approve(wrapperAddress, amount);
-      await approval.wait();
+      // `wrap` pulls via transferFrom, so an allowance has to exist first, and
+      // ERC-20 offers no way to approve and transfer in one call — hence two
+      // wallet prompts. What it does NOT require is approving every time: if a
+      // previous approval still covers this amount, skip straight to the wrap.
+      //
+      // Approved for exactly the amount rather than the usual unlimited: an
+      // infinite allowance on a token you are about to lock into a custody
+      // contract is a standing permission there is no reason to grant.
+      const allowance: bigint = await bond.allowance(state.account, wrapperAddress);
+      if (allowance < amount) {
+        const approval = await bond.approve(wrapperAddress, amount);
+        await approval.wait();
+      }
 
       const tx = await wrapper.wrap(amount);
       return tx.wait();
