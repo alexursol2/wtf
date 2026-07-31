@@ -40,6 +40,14 @@ export const VENUE_ABI = [
   "function auditor() view returns (address)",
   "function identityRegistry() view returns (address)",
 
+  // Circuit breakers. Added to the contract after the live Sepolia deployment
+  // was verified, so the frontend probes `paused()` and degrades when the call
+  // reverts rather than assuming the venue has them.
+  "function paused() view returns (bool)",
+  "function fillFrozen(uint256) view returns (bool)",
+  "function setPaused(bool value) external",
+  "function setFillFrozen(uint256 fillId, bool value) external",
+
   // events — used to enumerate, since arrays have no length getter here
   "event OrderPosted(uint256 indexed id, address indexed maker, uint64 expiry)",
   "event FillRecorded(uint256 indexed fillId, uint256 indexed orderId, address indexed taker, uint8 bucket)",

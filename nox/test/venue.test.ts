@@ -405,4 +405,81 @@ describe("DeferralVenue", () => {
     const shares = await venue.read.escrowShares([ctx.maker.account.address]);
     assert.equal(await noxRead("isViewer", [shares, ctx.maker.account.address]), true);
   });
+
+  // ---------------- circuit breakers ----------------
+
+  it("starts unpaused and lets only the auditor arm the breaker", async () => {
+    assert.equal(await venue.read.paused(), false);
+
+    await assert.rejects(
+      venue.write.setPaused([true], { account: ctx.maker.account }),
+      /not auditor/,
+      "a maker must not be able to halt the venue",
+    );
+
+    await venue.write.setPaused([true], { account: ctx.auditor.account });
+    assert.equal(await venue.read.paused(), true);
+  });
+
+  it("blocks new orders and fills while paused, and resumes cleanly", async () => {
+    await depositBoth();
+    const orderId = await postAsk();
+
+    await venue.write.setPaused([true], { account: ctx.auditor.account });
+
+    // Both entry points are gated in PLAINTEXT. That is the point: a paused
+    // venue must refuse loudly, not settle encrypted trades for zero.
+    const qty = await encInput(ctx.maker.account.address, venue.address);
+    const price = await encInput(ctx.maker.account.address, venue.address);
+    const latest = await ctx.publicClient.getBlock();
+    await assert.rejects(
+      venue.write.postAsk(
+        [qty.handle, price.handle, qty.proof, price.proof, BigInt(latest.timestamp) + 3600n],
+        { account: ctx.maker.account },
+      ),
+      /paused/,
+    );
+    await assert.rejects(fill(orderId, 0), /paused/);
+
+    await venue.write.setPaused([false], { account: ctx.auditor.account });
+    await fill(orderId, 0); // resumes without any repair step
+    assert.equal(await venue.read.fillsCount(), 1n);
+  });
+
+  it("freezes a fill's disclosure without touching its settlement", async () => {
+    await depositBoth();
+    const orderId = await postAsk();
+    await fill(orderId, 1);
+
+    await assert.rejects(
+      venue.write.setFillFrozen([0n, true], { account: ctx.maker.account }),
+      /not auditor/,
+    );
+    await assert.rejects(
+      venue.write.setFillFrozen([99n, true], { account: ctx.auditor.account }),
+      /no such fill/,
+    );
+
+    await venue.write.setFillFrozen([0n, true], { account: ctx.auditor.account });
+    assert.equal(await venue.read.fillFrozen([0n]), true);
+
+    // Disclosure is blocked...
+    await assert.rejects(
+      venue.write.reportTrade([0n], { account: ctx.maker.account }),
+      /frozen/,
+    );
+
+    // ...but the trade itself already happened. The fill record stands, and the
+    // auditor still holds the volume grant it was given at settlement. Freezing
+    // is a disclosure control, not an unwind — there is no un-transfer.
+    const f = await venue.read.fills([0n]);
+    const qtyHandle = (f as any[])[2];
+    assert.equal(await noxRead("isViewer", [qtyHandle, ctx.auditor.account.address]), true);
+    assert.equal(await noxRead("isPubliclyDecryptable", [qtyHandle]), false);
+
+    // Clearing the freeze restores the maker's ability to print.
+    await venue.write.setFillFrozen([0n, false], { account: ctx.auditor.account });
+    await venue.write.reportTrade([0n], { account: ctx.maker.account });
+    assert.equal((await venue.read.fills([0n]))[6], true, "fill should now be reported");
+  });
 });

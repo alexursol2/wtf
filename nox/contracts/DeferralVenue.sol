@@ -87,16 +87,55 @@ contract DeferralVenue {
     Order[] public orders;
     Fill[] public fills;
 
+    /// Emergency compliance controls, held by the auditor alone.
+    ///
+    /// Both act on PLAINTEXT state on purpose. A breaker that operated on
+    /// ciphertext would be unusable: the contract cannot read an encrypted
+    /// value, so it could not decide anything from one, and gating settlement
+    /// on an encrypted flag would silently zero trades instead of stopping
+    /// them - the failure mode this venue works hardest to avoid. Pausing is a
+    /// public act, and it should be: a halted venue is not a secret.
+    ///
+    /// Note the limit, which is inherent rather than an omission. Pausing stops
+    /// NEW orders and fills. It cannot reverse a settled trade: settlement has
+    /// already moved encrypted balances through Nox.transfer, and there is no
+    /// un-transfer. Freezing a fill therefore blocks its disclosure, not its
+    /// economics.
+    bool public paused;
+    mapping(uint256 => bool) public fillFrozen;
+
     event OrderPosted(uint256 indexed id, address indexed maker, uint64 expiry);
     event FillRecorded(uint256 indexed fillId, uint256 indexed orderId, address indexed taker, Bucket bucket);
     event TradeReported(uint256 indexed fillId);
     event VolumePublished(uint256 indexed fillId);
+    event PausedSet(bool value);
+    event FillFrozenSet(uint256 indexed fillId, bool value);
+
+    modifier onlyAuditor() {
+        require(msg.sender == auditor, "not auditor");
+        _;
+    }
 
     constructor(address _identityRegistry, address _auditor) {
         identityRegistry = IIdentityRegistry(_identityRegistry);
         auditor = _auditor;
         priceScaleEnc = Nox.toEuint256(PRICE_SCALE);
         Nox.allowThis(priceScaleEnc);
+    }
+
+    // ------------------------------------------------------------------
+    // Circuit breakers
+    // ------------------------------------------------------------------
+
+    function setPaused(bool value) external onlyAuditor {
+        paused = value;
+        emit PausedSet(value);
+    }
+
+    function setFillFrozen(uint256 fillId, bool value) external onlyAuditor {
+        require(fillId < fills.length, "no such fill");
+        fillFrozen[fillId] = value;
+        emit FillFrozenSet(fillId, value);
     }
 
     // ------------------------------------------------------------------
@@ -151,6 +190,7 @@ contract DeferralVenue {
         bytes calldata priceProof,
         uint64 expiry
     ) external returns (uint256 id) {
+        require(!paused, "paused");
         require(identityRegistry.isVerified(msg.sender), "not verified");
         require(expiry > block.timestamp, "expiry in past");
 
@@ -197,6 +237,7 @@ contract DeferralVenue {
         bytes calldata qtyProof,
         Bucket declaredBucket
     ) external {
+        require(!paused, "paused");
         Order storage o = orders[id];
         require(o.state == OrderState.Open, "not fillable");
         require(block.timestamp < o.expiry, "expired");
@@ -287,6 +328,7 @@ contract DeferralVenue {
 
     function reportTrade(uint256 fillId) external {
         Fill storage f = fills[fillId];
+        require(!fillFrozen[fillId], "frozen");
         require(msg.sender == f.maker, "reporting entity");
         require(!f.reported, "reported");
         f.reported = true;
@@ -299,6 +341,7 @@ contract DeferralVenue {
 
     function publishVolume(uint256 fillId) external {
         Fill storage f = fills[fillId];
+        require(!fillFrozen[fillId], "frozen");
         require(f.reported, "not reported");
         require(!f.volumePublished, "published");
         require(block.timestamp >= f.volumeDeferredUntil, "deferred");

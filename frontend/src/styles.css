@@ -201,18 +201,16 @@ select {
   border-color: var(--line);
 }
 
-/* Shared tooltip surface for anything carrying data-tip. */
-[data-tip] {
-  position: relative;
-}
-
-[data-tip]::after {
-  content: attr(data-tip);
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: max-content;
-  max-width: 300px;
+/* Tooltips are PORTALLED — one node at the end of <body>, positioned as fixed
+   against the trigger's viewport rect (see tooltip.ts). Deliberately NOT a
+   ::after on the trigger: a pseudo-element cannot escape an ancestor's
+   overflow:hidden, so tips inside the ticker track were clipped and tips near
+   the right edge were cut off by the window. Living outside every clip and
+   scroll container is the only structural fix. */
+.tooltip-portal {
+  position: fixed;
+  z-index: 200;
+  max-width: min(320px, calc(100vw - 16px));
   background: var(--ink);
   color: var(--bg);
   border-radius: var(--r-sm);
@@ -223,40 +221,32 @@ select {
   text-transform: none;
   letter-spacing: 0;
   text-align: left;
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 0.14s;
-  z-index: 80;
+  opacity: 0;
+  transition: opacity 0.12s;
 }
 
-[data-tip]:hover::after,
-[data-tip]:focus-visible::after {
+.tooltip-portal.open {
   opacity: 1;
 }
 
-/* A tip anchored near the right edge would overflow — flip it. */
-[data-tip].tip-left::after {
-  left: auto;
-  right: 0;
-}
-
-/* Ticker tips open upward, since the ticker is at the bottom. */
-.ticker [data-tip]::after {
-  top: auto;
-  bottom: calc(100% + 8px);
+/* Anything carrying a tip should read as inspectable. */
+[data-tip] {
+  cursor: help;
 }
 
 /* --------------------------------------------------------- workspace grid -- */
 
-/* Panels sit side by side as resizable columns, terminal-style, rather than
-   stacked. Widths live in custom properties so the drag handles can move them,
-   and persist in localStorage. */
+/* The trading floor is three EQUAL columns — my orders, order entry, escrow —
+   so no panel reads as subordinate. minmax(0,1fr) rather than 1fr: a bare 1fr
+   resolves against content, so one long ciphertext row would push the column
+   wider than its share and force the page to scroll sideways. */
 .workspace {
-  max-width: 1400px;
+  max-width: 1560px;
   margin: 0 auto;
   padding: 18px 22px 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10px var(--w2, 360px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
   gap: 0;
   padding-bottom: 78px; /* clears the ticker */
@@ -1093,59 +1083,11 @@ select:focus {
   border: var(--border);
 }
 
-/* ---------------------------------------------------------------- tooltip -- */
-
-.tip {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  margin-left: 5px;
-  border: var(--border-soft);
-  border-radius: 50%;
-  font-size: 10px;
-  font-weight: 800;
-  color: var(--ink-soft);
-  cursor: help;
-  vertical-align: middle;
-}
-
-.tip:hover,
-.tip:focus-visible {
-  color: var(--ink);
-  border-color: var(--line);
-}
-
-.tip::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: 290px;
-  background: var(--ink);
-  color: var(--bg);
-  border-radius: var(--r-sm);
-  padding: 9px 11px;
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1.45;
-  text-transform: none;
-  letter-spacing: 0;
-  text-align: left;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.14s;
-  z-index: 50;
-}
-
-.tip:hover::after,
-.tip:focus-visible::after {
-  opacity: 1;
-}
+/* The inline `.tip` badge that used to live here has been removed. It was the
+   same clipped-::after pattern as the old [data-tip] tooltip — an absolutely
+   positioned pseudo-element that could not escape an ancestor's overflow — and
+   nothing referenced it any more. Its replacement is the portal in tooltip.ts;
+   see `.tooltip-portal` near the top of this file. */
 
 /* ---------------------------------------------------------------- footer -- */
 
@@ -1446,5 +1388,350 @@ footer p {
     right: 12px;
     left: 12px;
     width: auto;
+  }
+}
+
+/* ======================================================= trading terminal ==
+   Order entry, allocation, partial-fill progress, compliance modal and the
+   regulator's circuit breakers. */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.pair-select {
+  padding: 5px 9px;
+  border: var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------ side toggle -- */
+
+/* Buy and sell are the one place colour carries meaning outside the accent,
+   so they get green/red rather than the lime — the convention is older than
+   this venue and traders read it pre-attentively. */
+.side-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.side {
+  padding: 10px;
+  border: var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.side.buy.on {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #05230f;
+}
+
+.side.sell.on {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #2a0606;
+}
+
+.seg-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.entry-note {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.micro {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* ------------------------------------------------------- escrow allocation -- */
+
+.alloc {
+  margin: 4px 0 12px;
+  padding: 11px 12px;
+  border: var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.alloc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.alloc-label {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+
+.alloc-source {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.alloc input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  margin: 0 0 8px;
+}
+
+.alloc-steps {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------ partial fill bars -- */
+
+.progress {
+  margin-top: 8px;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ok);
+}
+
+.progress-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
+.progress-legend .filled {
+  color: var(--ok);
+  font-weight: 800;
+}
+
+/* When the size was never disclosed to this browser there is no honest
+   percentage to draw, so the bar is replaced by a statement, not a guess. */
+.progress-unknown {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px dashed var(--line-soft);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------------- buttons -- */
+
+.submit-buy {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #05230f;
+}
+
+.submit-sell {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #2a0606;
+}
+
+.danger {
+  padding: 8px 12px;
+  border: var(--border);
+  border-radius: var(--r-sm);
+  background: var(--danger);
+  color: #2a0606;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.danger:disabled {
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ admin -- */
+
+.card.admin {
+  border-color: var(--danger);
+}
+
+.admin-state {
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------------ modal -- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.modal-card {
+  width: min(560px, 100%);
+  max-height: 84vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  box-shadow: 10px 10px 0 var(--accent);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.icon-btn.small {
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.modal-body {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.modal-body h4 {
+  margin: 14px 0 6px;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+
+.modal-body ol,
+.modal-body ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.modal-body li {
+  margin-bottom: 5px;
+}
+
+.modal-body code,
+.modal-body .mono {
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------- responsive -- */
+
+/* Three columns need real width. Below that they become two, then one — the
+   order entry terminal leads once stacked, since it is what you came to do. */
+@media (max-width: 1200px) {
+  .workspace {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #colEntry {
+    order: -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 }

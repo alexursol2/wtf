@@ -172,6 +172,21 @@ What this does and does not affect: settlement *between* parties is still exact 
 
 **An order can never be known to be exhausted.** `qtyRemaining` is encrypted, so there is no on-chain "fully filled" state. The maker decrypts their own remainder and cancels to reclaim. This is a genuine consequence of confidentiality, not an unfinished feature.
 
+**The book is one-sided, so "market sell" does not exist.** `postAsk` creates resting liquidity and `fill` consumes it; there is no `postBid`. In trading terms the venue is RFQ, not a matched two-sided book. The frontend maps this honestly rather than papering over it:
+
+| UI action | Contract call | Notes |
+|---|---|---|
+| Limit sell | `postAsk` | You become the maker and the reporting entity |
+| Limit buy | `fill` with your bid | `Nox.ge(bid, price)` gates it; a non-crossing bid settles to **zero**, never reverts |
+| Market buy | `fill` with a crossing bid | You are debited `qty × ask ÷ 1e4`, never your bid, so bidding high does not overpay |
+| Market sell | *refused in the UI* | There are no resting bids to lift |
+
+**Partial-fill percentages are only shown where both numbers are real.** `qtyRemaining` shrinks as fills land, but the original size is never stored on-chain and `Fill` does not carry its order id, so `filled/original` cannot be reconstructed from contract state. The frontend records the quantity *you typed* when posting (your own plaintext, in `localStorage`) and draws a bar only when it also holds a viewer grant on the remainder. An order posted from another browser shows "size sealed" rather than a fabricated ratio.
+
+**Circuit breakers exist in the source but not in the live deployment.** `setPaused` / `setFillFrozen` are auditor-only and covered by tests, added after the Sepolia venue was deployed and Etherscan-verified. The frontend probes `paused()` and reports "not available on this deployment" when the call reverts, instead of rendering a control that cannot work. Both act on plaintext state deliberately: gating settlement on an encrypted flag would silently zero trades rather than stopping them. Pausing halts *new* orders and fills — it cannot reverse a settled trade, because settlement has already moved encrypted balances and there is no un-transfer. Freezing a fill therefore blocks its **disclosure**, not its economics.
+
+**Two of the three listed instruments have no book.** The pair selector lists `ACME30 / USD`, `AAPL.rwa / USD` and `TSLA.rwa / USD`; only ACME30 has a deployed T-REX token. The other two are labelled `· no book` in the dropdown and raise a banner when selected. Inventing liquidity would be the same class of lie as inventing a decrypted number.
+
 ---
 
 ## Price convention

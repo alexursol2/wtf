@@ -40,16 +40,20 @@
           class="help"
           type="button"
           aria-label="What is this venue"
-          data-tip="Price at settlement · volume on the deferral · regulator ahead of both. An RFQ venue for tokenized bonds, dark pre-trade under a large-in-scale waiver, printing on the MiFIR post-trade schedule."
+          data-tip="Price at settlement · volume on the deferral · regulator ahead of both. An RFQ venue for tokenised bonds, dark pre-trade under a large-in-scale waiver, printing on the MiFIR post-trade schedule."
         >?</button>
         <span id="roleTag" class="role-tag hidden">Regulator</span>
+
+        <!-- Instrument selector. Only ACME30 has a deployed token; the rest are
+             labelled as such rather than pretending to have a book. -->
+        <label class="sr-only" for="pairSelect">Trading pair</label>
+        <select id="pairSelect" class="pair-select" title="Trading pair"></select>
       </div>
 
       <div class="wallet">
-        <span id="complianceChip" class="pill muted">compliance unknown</span>
+        <span id="complianceChip" class="pill muted" tabindex="0">compliance unknown</span>
         <span id="netLabel" class="pill muted">not connected</span>
 
-        <!-- Your position + funding collapse behind this wallet button. -->
         <div class="wallet-menu">
           <button
             id="walletBtn"
@@ -57,12 +61,12 @@
             type="button"
             aria-label="Your position and funding"
             aria-expanded="false"
-            title="Your position, funding and instructions"
+            data-tip="Your escrowed balances, decrypted with grants only you hold, plus how to fund them."
           >
             <svg><use href="#i-wallet" /></svg>
           </button>
 
-          <div id="walletPanel" class="popover hidden" role="dialog" aria-label="Wallet">
+          <div id="walletPanel" class="popover hidden" role="dialog" aria-label="Your position">
             <div class="popover-head">
               <h3>Your position</h3>
               <span class="hint">decrypted with grants only you hold</span>
@@ -91,35 +95,13 @@
               </div>
             </div>
 
-            <div class="subsection">
-              <h4><span class="step">1</span> Fund escrow</h4>
-              <p class="hint left">
-                Cash to fill, shares to post. An unfunded order settles for zero rather than
-                failing &mdash; reverting would leak the shortfall.
-              </p>
-              <form id="depositForm" class="form">
-                <div class="field">
-                  <label for="depositAmount">Amount</label>
-                  <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
-                </div>
-                <div class="field">
-                  <label for="depositLeg">Leg</label>
-                  <select id="depositLeg">
-                    <option value="cash">Cash — to fill</option>
-                    <option value="shares">Shares — to post</option>
-                  </select>
-                </div>
-                <button type="submit" class="primary" data-async="deposit">Deposit</button>
-              </form>
-            </div>
-
             <details class="howto">
-              <summary>How to fund this wallet</summary>
+              <summary>How to fund this account</summary>
               <ol class="howto-list">
-                <li>Connect a wallet on <strong>Ethereum Sepolia</strong>. Wrong network? Switch chains in MetaMask.</li>
-                <li>Get test ETH for gas from a Sepolia faucet.</li>
+                <li>Connect a wallet on <strong>Ethereum Sepolia</strong>. On the wrong network, switch chains in your wallet.</li>
+                <li>Hold test ETH for gas from a Sepolia faucet.</li>
                 <li>Your address must be registered in the ERC-3643 IdentityRegistry, or every venue call reverts with <span class="mono">not verified</span>.</li>
-                <li>Deposit <strong>cash</strong> to take offers, or wrap and deposit <strong>shares</strong> to post them, using the form above.</li>
+                <li>Deposit <strong>cash</strong> to buy, or wrap and deposit <strong>shares</strong> to sell, in <em>Escrow management</em>.</li>
               </ol>
             </details>
           </div>
@@ -134,11 +116,20 @@
 
     <div id="banner" class="banner hidden"></div>
 
-    <!-- ================= TRADER / MAKER — one workspace ================= -->
+    <!-- ================= TRADER / MAKER — three equal columns ================= -->
     <main id="viewTrader" class="workspace">
-      <!-- col: your orders (primary) + collapsible book + post -->
-      <section class="col" id="colMain">
-        <!-- The order book collapses behind this button; sorting appears when open. -->
+      <!-- ---------- Column 1: my orders, active fills, the book ---------- -->
+      <section class="col" id="colOrders">
+        <div class="card fill mine">
+          <div class="card-head">
+            <h2>My orders &amp; fills</h2>
+            <span class="hint">cancel blocked while a fill is unresolved</span>
+          </div>
+          <div id="myOrders" class="rows">
+            <p class="empty">Connect a wallet to see your orders.</p>
+          </div>
+        </div>
+
         <div class="toolbar">
           <button id="bookToggle" class="ghost" type="button" aria-expanded="false" aria-controls="bookPanel">
             <svg class="ic"><use href="#i-history" /></svg>
@@ -166,59 +157,136 @@
             <p class="empty">Loading the public book…</p>
           </div>
         </div>
+      </section>
 
-        <div class="card fill mine">
+      <!-- ---------- Column 2: order entry terminal ---------- -->
+      <section class="col" id="colEntry">
+        <div class="card terminal">
           <div class="card-head">
-            <h2>My orders</h2>
-            <span class="hint">cancel blocked while a fill is unresolved</span>
+            <h2>Order entry</h2>
+            <span id="lisBadge" class="pill solid" tabindex="0" data-tip="Minimum order size is set at large-in-scale, the waiver under which this book is dark. DECLARED, not enforced: the contract sets no minimum because the quantity is a ciphertext it can never read. The auditor checks the declaration against the real size.">LIS waiver ⓘ</span>
           </div>
-          <div id="myOrders" class="rows">
-            <p class="empty">Connect a wallet to see your orders.</p>
-          </div>
-        </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h2>Offer shares for sale</h2>
-            <span id="lisBadge" class="pill solid" data-tip="Minimum order size is set at large-in-scale, the waiver under which the book is dark. This is DECLARED, not enforced: the contract sets no minimum, because the quantity is a ciphertext it can never read. The auditor checks the declaration against the real size.">LIS waiver ⓘ</span>
+          <!-- Side. Buy takes resting liquidity (fill); sell posts it (postAsk). -->
+          <div class="side-toggle" role="group" aria-label="Side">
+            <button id="sideBuy" class="side buy" type="button" aria-pressed="false">Buy</button>
+            <button id="sideSell" class="side sell on" type="button" aria-pressed="true">Sell</button>
           </div>
-          <p class="hint left">
-            Post an offer to sell: your size and price are encrypted before they leave the browser,
-            so the book stays dark until settlement prints them on the deferral schedule.
-          </p>
-          <form id="postForm" class="form">
-            <div class="field">
-              <label for="qty">Quantity</label>
-              <input id="qty" type="number" min="1" step="1" placeholder="50000" required />
+
+          <div class="seg-row" role="group" aria-label="Order type">
+            <button class="seg on" data-ordertype="limit" type="button">Limit order</button>
+            <button class="seg" data-ordertype="market" type="button">Market order</button>
+          </div>
+
+          <p id="entryExplain" class="entry-note"></p>
+
+          <form id="entryForm" class="form">
+            <!-- Buy hits a specific resting order: this venue is RFQ, so there
+                 is one ask per order rather than an aggregated price level. -->
+            <div class="field hidden" id="targetField">
+              <label for="targetOrder">Target order</label>
+              <select id="targetOrder"></select>
             </div>
+
             <div class="field">
-              <label for="price">Price <span class="mono">98.7500 → 987500</span></label>
-              <input id="price" type="number" min="1" step="1" placeholder="987500" required />
+              <label for="entryQty">Quantity <span id="qtyUnit" class="mono"></span></label>
+              <input id="entryQty" type="number" min="1" step="1" placeholder="50000" required />
             </div>
+
+            <div class="alloc">
+              <div class="alloc-head">
+                <span class="alloc-label">Allocate from escrow</span>
+                <span id="allocSource" class="alloc-source">—</span>
+              </div>
+              <input id="allocRange" type="range" min="0" max="100" step="1" value="0" aria-label="Percentage of escrow" />
+              <div class="alloc-steps">
+                <button class="seg" data-alloc="25" type="button">25%</button>
+                <button class="seg" data-alloc="50" type="button">50%</button>
+                <button class="seg" data-alloc="75" type="button">75%</button>
+                <button class="seg" data-alloc="100" type="button">100%</button>
+              </div>
+              <p id="allocNote" class="micro"></p>
+            </div>
+
             <div class="field">
-              <label for="expiry">Expires in (min)</label>
-              <input id="expiry" type="number" min="1" step="1" value="60" required />
+              <label for="entryPrice">
+                <span id="priceLabel">Limit price</span>
+                <span class="mono">98.7500 → 987500</span>
+              </label>
+              <input id="entryPrice" type="number" min="1" step="1" placeholder="987500" required />
+              <p id="priceNote" class="micro hidden">Executes against best available dark liquidity.</p>
             </div>
-            <button type="submit" class="primary" data-async="post">Post offer</button>
+
+            <div class="field" id="bucketField">
+              <label for="entryBucket">Disclosure bucket</label>
+              <select id="entryBucket">
+                <option value="1">Large in scale — deferred volume</option>
+                <option value="0">Standard — immediate volume</option>
+              </select>
+            </div>
+
+            <div class="field" id="expiryField">
+              <label for="entryExpiry">Time in force (min)</label>
+              <input id="entryExpiry" type="number" min="1" step="1" value="60" />
+              <label class="check">
+                <input id="entryGtc" type="checkbox" />
+                <span>Good &rsquo;til cancelled (never expires)</span>
+              </label>
+            </div>
+
+            <button id="entrySubmit" type="submit" class="primary submit-sell" data-async="entry">Post sell offer</button>
           </form>
         </div>
       </section>
 
-      <div class="resizer" data-resize="w2" title="Drag to resize"></div>
-
-      <!-- col: wrapper -->
+      <!-- ---------- Column 3: wrapper + escrow management ---------- -->
       <section class="col" id="colSide">
+        <div class="card">
+          <div class="card-head">
+            <h2>Escrow management</h2>
+            <span
+              class="help"
+              tabindex="0"
+              data-tip="Cash funds the buy side, shares fund the sell side. An underfunded order settles for zero rather than reverting — reverting would leak the shortfall to anyone watching."
+            >?</span>
+          </div>
+          <form id="depositForm" class="form">
+            <div class="field">
+              <label for="depositAmount">Amount</label>
+              <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
+            </div>
+            <div class="field">
+              <label for="depositLeg">Leg</label>
+              <select id="depositLeg">
+                <option value="cash">Cash — funds buys</option>
+                <option value="shares">Shares — funds sells</option>
+              </select>
+            </div>
+            <label class="check">
+              <input id="depositBuffer" type="checkbox" checked />
+              <span
+                tabindex="0"
+                data-tip="Settlement is branchless: if escrow is even one unit short of quantity × price ÷ 1e4, the transfer's success flag is false and the whole fill settles for zero — with no revert and no error to read. A small buffer absorbs rounding at the price scale so an exact-amount deposit cannot silently zero out."
+                >Fund recommended (+0.5% buffer) ⓘ</span
+              >
+            </label>
+            <p id="depositPreview" class="micro"></p>
+            <button type="submit" class="primary" data-async="deposit">Deposit</button>
+          </form>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h2>Confidential wrapper</h2>
             <span
               class="help"
+              tabindex="0"
               data-tip="Layer 2 custody boundary — plaintext bonds in, encrypted balance out. A separate flow, not a prerequisite for trading. Wrap amounts are public; confidentiality applies between wrapped holders."
             >?</span>
           </div>
           <div class="grid2">
             <div class="tile">
-              <label>Unwrapped ACME30</label>
+              <label>Unwrapped <span id="bondSymbol">ACME30</span></label>
               <div id="bondBalance" class="plain">—</div>
               <span class="status public">public ERC-3643</span>
             </div>
@@ -273,6 +341,27 @@
       <div class="resizer" data-resize="wa" title="Drag to resize"></div>
 
       <section class="col" id="colAudSide">
+        <!-- Emergency compliance controls. Feature-detected: the deployed venue
+             predates them, and the panel says so rather than offering a button
+             that cannot work. -->
+        <div class="card admin">
+          <div class="card-head">
+            <h2>Circuit breakers</h2>
+            <span
+              class="help"
+              tabindex="0"
+              data-tip="Emergency compliance powers held by the regulator address alone. Pausing stops new orders and fills; it cannot claw back a settled trade, because settlement already moved encrypted balances."
+              >?</span
+            >
+          </div>
+          <div id="adminState" class="admin-state">Checking deployment…</div>
+          <div class="admin-actions">
+            <button id="btnPause" class="danger" type="button" disabled>Pause order book</button>
+            <button id="btnFreeze" class="danger" type="button" disabled>Freeze suspicious fill</button>
+          </div>
+          <p class="note" id="adminNote"></p>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h2>Unreported fills</h2>
@@ -310,6 +399,7 @@
         <span>THE TAPE</span>
         <span
           class="help mini"
+          tabindex="0"
           data-tip="Only prints with an open parameter show here. Price prints at settlement, volume on the deferral (LIS ~90s here, compressed for demo — the real regime defers to end of the following quarter). Colour tracks bucket, instrument and volume."
         >?</span>
         <button id="tapeUnhide" class="tape-unhide hidden" type="button" title="Restore prints you have hidden"></button>
@@ -318,6 +408,17 @@
         <div class="ticker-run" id="tape">
           <span class="ticker-empty">No prints yet.</span>
         </div>
+      </div>
+    </div>
+
+    <!-- ================= KYC modal ================= -->
+    <div id="kycModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="kycTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="kycTitle">Identity verification required</h3>
+          <button id="kycClose" class="icon-btn small" type="button" aria-label="Close">×</button>
+        </div>
+        <div id="kycBody" class="modal-body"></div>
       </div>
     </div>
 

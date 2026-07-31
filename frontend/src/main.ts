@@ -37,6 +37,8 @@ import {
 } from "@iexec-nox/handle";
 import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
+import { INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
+import { initTooltips } from "./tooltip.js";
 import {
   asyncAction,
   copyable,
@@ -103,7 +105,51 @@ const state = {
     countryGateActive: false,
     countryAllowed: true,
   },
+  /** Selected trading pair. Only the live one has a deployed token. */
+  instrument: INSTRUMENTS[0] as Instrument,
+  /** Decrypted escrow, kept so the allocation slider has something to size against. */
+  escrow: { cash: null as bigint | null, shares: null as bigint | null },
+  /** Circuit-breaker support, discovered by feature detection at boot. */
+  breaker: { supported: false, paused: false, checked: false },
 };
+
+// ---------------------------------------------------------------------------
+// order entry state
+// ---------------------------------------------------------------------------
+
+/**
+ * The venue is ASK-ONLY, and that is a property of the contract, not a gap in
+ * this screen. `postAsk` creates resting liquidity; `fill` consumes it. There is
+ * no `postBid`, so:
+ *
+ *   SELL = post an ask   — you become the maker and the reporting entity
+ *   BUY  = fill an ask   — you are the taker, hitting one resting order
+ *
+ * That also decides what the order types can honestly mean. A LIMIT BUY is
+ * native: `Nox.ge(bid, o.price)` compares your encrypted bid against the
+ * encrypted ask, and a bid that does not cross settles for zero. A MARKET BUY
+ * is a bid set high enough to cross whatever the ask turns out to be — safe,
+ * because the taker is debited `qty × ask ÷ SCALE`, never the bid, so bidding
+ * high does not overpay. A MARKET SELL has nothing to hit: there are no resting
+ * bids to lift, so it is refused rather than faked.
+ */
+type Side = "buy" | "sell";
+type OrderType = "limit" | "market";
+
+const entry = {
+  side: "sell" as Side,
+  type: "limit" as OrderType,
+  gtc: false,
+};
+
+/** GTC has no "never" on-chain — expiry is a uint64 the contract compares to
+ *  block.timestamp — so it is expressed as a date far past any demo horizon. */
+const GTC_EXPIRY = 4_102_444_800n; // 2100-01-01Z
+
+/** A market buy must cross an unknown, encrypted ask. uint256 headroom is
+ *  enormous, but safeMul still has to not overflow downstream, so this is large
+ *  enough to cross any sane quote and far below the overflow gate. */
+const MARKET_BID = 10n ** 12n;
 
 // ---------------------------------------------------------------------------
 // encrypted values
@@ -174,12 +220,31 @@ async function encryptInput(value: bigint, app: string) {
   return { handle, proof: handleProof };
 }
 
+/**
+ * Decrypted values, cached by handle.
+ *
+ * Safe to cache indefinitely, and that is a property of the protocol rather
+ * than an assumption: a Nox handle is immutable. Every operation mints a NEW
+ * handle — that is why the contract has to re-grant an ACL after each one — so
+ * a handle's plaintext can never change underneath the cache. Only its
+ * disclosure state can, and that is read separately on-chain.
+ *
+ * Without this the auditor's panel re-decrypted every row on every 20-second
+ * poll, so each block update flashed the whole column back to "decrypting…"
+ * even though nothing about those fills had changed.
+ */
+const decrypted = new Map<string, bigint>();
+
 async function tryDecrypt(handle: string): Promise<bigint | null> {
   if (!handle || handle === ZeroHash) return null;
+  const hit = decrypted.get(handle);
+  if (hit !== undefined) return hit;
   try {
     const client = await getHandleClient();
     const { value } = await client.decrypt(handle as any);
-    return BigInt(value as bigint);
+    const v = BigInt(value as bigint);
+    decrypted.set(handle, v);
+    return v;
   } catch (e: any) {
     if (isTransient(e)) return null;
     throw e;
@@ -432,22 +497,106 @@ async function refreshCompliance() {
 
     state.compliance = { verified, country, countryGateActive: gateActive, countryAllowed: allowed };
 
+    // The badge reads in words; the raw protocol values move into the tooltip.
+    // ERC-3643 stores the jurisdiction as an ISO 3166-1 NUMERIC code, so the
+    // registry returns 250 — which is the authoritative value but says nothing
+    // to a compliance officer reading a header. Name in the badge, code in the
+    // detail.
+    const name = countryName(country);
+    const detail = `ISO code: ${country || "none"} · ${
+      verified ? "ERC-3643 whitelisted" : "not on the ERC-3643 whitelist"
+    }${gateActive ? ` · wrapper country gate ${allowed ? "permits" : "restricts"} ${name}` : ""}`;
+    chip.dataset.tip = detail;
+
     if (!verified) {
-      chip.className = "pill bad";
-      chip.textContent = "not verified";
+      chip.className = "pill bad interactive";
+      chip.textContent = "Not verified ⓘ";
+      chip.dataset.tip = `${detail} — click for what verification requires.`;
     } else if (gateActive && !allowed) {
-      chip.className = "pill warn";
-      chip.textContent = `country ${country} restricted`;
+      chip.className = "pill warn interactive";
+      chip.textContent = `Restricted (${name})`;
     } else {
-      chip.className = "pill ok";
-      chip.textContent = `verified · country ${country}`;
+      chip.className = "pill ok interactive";
+      chip.textContent = `Verified (${name})`;
     }
   } catch {
     chip.className = "pill muted";
     chip.textContent = "compliance unknown";
+    delete chip.dataset.tip;
   }
 
   renderComplianceNotice();
+  renderAllocSource();
+}
+
+// ---------------------------------------------------------------------------
+// KYC modal
+// ---------------------------------------------------------------------------
+
+function openKyc() {
+  const c = state.compliance;
+  const body = el("kycBody");
+  const modal = el("kycModal");
+  if (!body || !modal) return;
+
+  const addr = state.account ? shortAddr(state.account) : "your address";
+
+  body.innerHTML = !state.account
+    ? `<p>No wallet is connected, so there is no identity to check. Connect one to see
+       its status against the ERC-3643 register.</p>`
+    : c.verified === false
+      ? `<p><strong class="mono">${escapeHtml(addr)}</strong> has no registered identity in the
+         ERC-3643 <span class="mono">IdentityRegistry</span>. Every venue call &mdash; deposit,
+         post and fill alike &mdash; reverts with <span class="mono">"not verified"</span> before
+         it touches a single ciphertext.</p>
+         <h4>What verification means here</h4>
+         <ul>
+           <li>An <strong>agent</strong> of the token issuer calls
+           <span class="mono">registerIdentity(address, identity, country)</span> on the registry.</li>
+           <li>That binds an ONCHAINID contract to your address and records your jurisdiction as
+           an ISO 3166-1 numeric code.</li>
+           <li>Compliance modules then evaluate transfers against that identity &mdash; this is
+           Layer 1, and this venue does not modify it.</li>
+         </ul>
+         <h4>Why the deployer is not verified</h4>
+         <p>Deliberate: the deployer is the <em>issuer</em>, not a trader. It registers others and
+         holds no position, which is also why connecting it shows this panel.</p>
+         <h4>What you can still do</h4>
+         <ul>
+           <li>Read the public tape &mdash; prints need no wallet.</li>
+           <li>Inspect the book: order ids, makers and expiries are public; only sizes and prices
+           are sealed.</li>
+         </ul>`
+      : c.countryGateActive && !c.countryAllowed
+        ? `<p>Identity is verified, but <strong>${escapeHtml(countryName(c.country))}</strong>
+           (ISO ${c.country}) is restricted at the confidential wrapper.</p>
+           <h4>What this blocks</h4>
+           <ul>
+             <li><strong>Wrapping and confidential transfers</strong> revert with
+             <span class="mono">"country"</span>.</li>
+             <li><strong>Venue trading is unaffected</strong> &mdash; the venue checks identity
+             only, never jurisdiction.</li>
+           </ul>
+           <h4>Why the wrapper re-checks</h4>
+           <p>Pooling: Layer 1 sees the wrapper as one holder of record and cannot tell the
+           holders inside it apart. Re-enforcing the country rule at Layer 2 is the mitigation.</p>`
+        : `<p><strong class="mono">${escapeHtml(addr)}</strong> is verified in the ERC-3643
+           register, jurisdiction <strong>${escapeHtml(countryName(c.country))}</strong>
+           (ISO ${c.country}).</p>
+           <h4>What that permits</h4>
+           <ul>
+             <li>Deposit cash and shares into venue escrow.</li>
+             <li>Post asks and fill resting orders.</li>
+             <li>Wrap into the confidential layer${
+               c.countryGateActive ? ", permitted for this jurisdiction" : ""
+             }.</li>
+           </ul>`;
+
+  modal.classList.remove("hidden");
+}
+
+function closeKyc() {
+  el("kycModal")?.classList.add("hidden");
 }
 
 /**
@@ -543,6 +692,39 @@ const hiddenFills = new Set<number>(
 );
 function persistHidden() {
   localStorage.setItem(HIDDEN_KEY, JSON.stringify([...hiddenFills]));
+}
+
+/**
+ * Original size of orders posted from THIS browser, so a partial fill can be
+ * shown as a percentage.
+ *
+ * There is no way to derive this on-chain. `qtyRemaining` is a ciphertext that
+ * shrinks as fills land, the original is never stored, and the fill struct does
+ * not carry its order id — so remaining/original cannot be reconstructed from
+ * contract state at all. What IS legitimate is remembering the number the user
+ * typed when they posted: it is their own order and their own plaintext.
+ *
+ * Consequence, and it is deliberate: an order posted from another browser has
+ * no known denominator, so it gets "size not disclosed" instead of a bar. A
+ * fabricated percentage would be exactly the lie rule 1 forbids.
+ */
+const POSTED_KEY = "orders:posted";
+const postedQty = new Map<number, bigint>(
+  (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(POSTED_KEY) ?? "{}") as Record<string, string>;
+      return Object.entries(raw).map(([k, v]) => [Number(k), BigInt(v)] as [number, bigint]);
+    } catch {
+      return [];
+    }
+  })(),
+);
+function rememberPosted(id: number, qty: bigint) {
+  postedQty.set(id, qty);
+  localStorage.setItem(
+    POSTED_KEY,
+    JSON.stringify(Object.fromEntries([...postedQty].map(([k, v]) => [k, v.toString()]))),
+  );
 }
 
 /** Order-book view controls (task: sort/filter the book). */
@@ -782,12 +964,15 @@ async function refreshPosition() {
         statusEl.className = "status confirmed";
         statusEl.textContent = "decrypted";
         if (changed) flashReveal(valueEl);
+        // The allocation slider sizes against this, so keep it in state.
+        state.escrow[leg] = value;
       }
     } catch {
       statusEl.className = "status failed";
       statusEl.textContent = "read failed";
     }
   }
+  renderAllocSource();
 }
 
 async function refreshWrapper() {
@@ -861,7 +1046,37 @@ function render() {
     applyBookDefault(); // logged-in leads with My orders; read-only with the book
     renderBook();
     renderMyOrders();
+    renderTargetOptions();
   }
+}
+
+/**
+ * Partial execution, drawn only when both numbers are real.
+ *
+ * `remaining` is decryptable when you hold the viewer grant (i.e. it is your
+ * order); `original` is what this browser recorded at post time. Missing either
+ * one, the row says the size was never disclosed rather than inventing a ratio.
+ */
+function progressMarkup(o: OrderRow): string {
+  const original = postedQty.get(o.id);
+  const remaining = decrypted.get(o.qtyRemaining);
+
+  if (original === undefined || remaining === undefined || original === 0n) {
+    return `<div class="progress-unknown">size sealed — no disclosed quantity to measure against</div>`;
+  }
+
+  const capped = remaining > original ? original : remaining;
+  const filled = original - capped;
+  const pct = Number((filled * 100n) / original);
+
+  return `
+    <div class="progress">
+      <div class="progress-track"><div class="progress-bar" style="width:${pct}%"></div></div>
+      <div class="progress-legend">
+        <span class="filled">${pct}% filled · ${fmt(filled)}</span>
+        <span>${100 - pct}% pending · ${fmt(capped)}</span>
+      </div>
+    </div>`;
 }
 
 function orderStatusChip(o: OrderRow, expired: boolean): string {
@@ -920,6 +1135,7 @@ function renderBook() {
 
       const canFill = !mine && !expired && !pending && state.compliance.verified === true;
 
+      const gtc = o.expiry >= GTC_EXPIRY;
       return `
       <div class="row ${mine ? "mine" : ""}">
         <div class="row-main">
@@ -927,21 +1143,31 @@ function renderBook() {
             <strong>#${o.id}</strong>
             ${orderStatusChip(o, expired)}
             ${mine ? `<span class="pill solid">yours</span>` : ""}
+            ${gtc ? `<span class="pill muted">GTC</span>` : ""}
             <span class="lock"><svg><use href="#i-lock" /></svg><span>size &amp; price encrypted</span></span>
           </div>
+          ${mine ? progressMarkup(o) : ""}
           <div class="row-meta">
             <span>maker ${escapeHtml(shortAddr(o.maker))}</span>
             <span class="mono">qty ${escapeHtml(short(o.qtyRemaining))}</span>
             <span class="mono">px ${escapeHtml(short(o.price))}</span>
-            <span>expires ${new Date(Number(o.expiry) * 1000).toLocaleTimeString()}</span>
+            ${gtc ? `<span>no expiry</span>` : `<span>expires ${new Date(Number(o.expiry) * 1000).toLocaleTimeString()}</span>`}
           </div>
         </div>
         <div class="actions">
           ${
             mine
               ? ""
-              : `<button class="small" data-fill="${o.id}" data-bucket="${Bucket.LargeInScale}" ${canFill ? "" : "disabled"}>Fill · LIS</button>
-                 <button class="small" data-fill="${o.id}" data-bucket="${Bucket.Standard}" ${canFill ? "" : "disabled"}>Fill · standard</button>`
+              : `<button class="small" data-trade="${o.id}" data-bucket="${Bucket.LargeInScale}" ${canFill ? "" : "disabled"}
+                   data-tip="${
+                     canFill
+                       ? "Loads this order into the entry terminal, where you set bid, size and bucket before signing."
+                       : expired
+                         ? "This order has expired."
+                         : pending
+                           ? "A fill on this order is still resolving."
+                           : "Your address is not verified in the ERC-3643 register."
+                   }">Trade</button>`
           }
         </div>
       </div>`;
@@ -969,22 +1195,36 @@ function renderMyOrders() {
     .map((o) => {
       const pending = o.stateCode === OrderState.PendingResolution;
       const cancelled = o.stateCode === OrderState.Cancelled;
+      const gtc = o.expiry >= GTC_EXPIRY;
       return `
       <div class="row mine">
         <div class="row-main">
           <div class="row-title">
             <strong>#${o.id}</strong>
             ${orderStatusChip(o, o.expiry <= now)}
+            <span class="pill muted">sell</span>
+            ${gtc ? `<span class="pill solid" data-tip="Good 'til cancelled — rests until you cancel it.">GTC</span>` : ""}
           </div>
+          ${progressMarkup(o)}
           <div class="row-meta">
             <span class="mono">qty ${escapeHtml(short(o.qtyRemaining))}</span>
             <span class="mono">px ${escapeHtml(short(o.price))}</span>
+            ${gtc ? "" : `<span>expires ${new Date(Number(o.expiry) * 1000).toLocaleTimeString()}</span>`}
           </div>
         </div>
         <div class="actions">
-          ${pending ? `<button class="small" data-reopen="${o.id}">Reopen</button>` : ""}
+          ${
+            pending
+              ? `<button class="small" data-reopen="${o.id}"
+                   data-tip="Settlement is async: the contract cannot read its own encrypted result, so it parks the order here until you confirm the value materialised.">Reopen order</button>`
+              : ""
+          }
           <button class="small" data-cancel="${o.id}" ${pending || cancelled ? "disabled" : ""}
-            title="${pending ? "Blocked while a fill is unresolved" : "Reclaim the remainder"}">Cancel</button>
+            data-tip="${
+              pending
+                ? "Blocked while a fill is unresolved — cancelling now could race the settlement."
+                : "Returns the unfilled remainder to your escrow. Any filled portion stands."
+            }">Cancel remaining</button>
         </div>
       </div>`;
     })
@@ -1169,8 +1409,8 @@ async function renderAuditor() {
 
   renderAuditorFills(isAuditor);
   renderUnreported();
+  void refreshBreaker();
   await renderRegister();
-  if (isAuditor) void fillAuditorValues();
 }
 
 function renderAuditorFills(isAuditor: boolean) {
@@ -1209,7 +1449,15 @@ function renderAuditorFills(isAuditor: boolean) {
               <label>regulator sees</label>
               ${
                 isAuditor
-                  ? `<div class="plain" id="audvol-${f.id}">decrypting…</div>`
+                  ? // Cached first: a value already decrypted stays on screen
+                    // across polls instead of flashing back to "decrypting…".
+                    // Undecrypted rows get an explicit button rather than an
+                    // automatic gateway round-trip — revealing is an act.
+                    decrypted.has(f.qty)
+                    ? `<div class="plain" id="audvol-${f.id}">${fmt(decrypted.get(f.qty)!)}</div>`
+                    : `<div id="audvol-${f.id}" class="cipher">sealed</div>
+                       <button class="small" data-reveal="${f.id}"
+                         data-tip="Decrypts this volume through the Nox gateway using the grant the contract gave the auditor at the moment of the fill.">Reveal encrypted volume</button>`
                   : `<div class="cipher">requires the auditor's grant</div>`
               }
             </div>
@@ -1228,21 +1476,39 @@ function renderAuditorFills(isAuditor: boolean) {
     .join("");
 }
 
-async function fillAuditorValues() {
-  for (const f of fills) {
-    const node = document.getElementById(`audvol-${f.id}`);
-    if (!node) continue;
+/** Reveals one volume on demand. Cached, so it never re-flickers afterwards. */
+async function revealAuditorValue(fillId: number, button: HTMLButtonElement) {
+  const f = fills.find((x) => x.id === fillId);
+  if (!f) return;
+
+  const node = document.getElementById(`audvol-${fillId}`);
+  if (node) {
+    node.textContent = "decrypting…";
+    node.className = "cipher";
+  }
+  button.disabled = true;
+
+  try {
     const v = await tryDecrypt(f.qty);
-    const cur = document.getElementById(`audvol-${f.id}`);
-    if (!cur) continue;
+    const cur = document.getElementById(`audvol-${fillId}`);
+    if (!cur) return;
     if (v === null) {
       cur.textContent = "not yet resolved";
       cur.className = "cipher";
+      button.disabled = false;
     } else {
       cur.textContent = fmt(v);
       cur.className = "plain";
       flashReveal(cur);
+      button.remove();
     }
+  } catch {
+    const cur = document.getElementById(`audvol-${fillId}`);
+    if (cur) {
+      cur.textContent = "decrypt failed";
+      cur.className = "cipher";
+    }
+    button.disabled = false;
   }
 }
 
@@ -1263,6 +1529,7 @@ function renderUnreported() {
           <div class="row-title">
             <strong>fill #${f.id}</strong>
             ${statusChip("failed", "no print submitted")}
+            <span class="pill warn" data-tip="reportTrade() is an obligation on the maker as the reporting entity. Settlement already moved encrypted balances, so the trade is done — only its publication is outstanding. The contract cannot compel the print, which is why the auditor holds the volume handle from the moment of the fill.">Trade settled on-chain; awaiting maker tape print submission ⓘ</span>
           </div>
           <div class="row-meta">
             <span>reporting entity ${escapeHtml(shortAddr(f.maker))}</span>
@@ -1272,6 +1539,112 @@ function renderUnreported() {
       </div>`,
     )
     .join("");
+}
+
+// ---------------------------------------------------------------------------
+// circuit breakers
+// ---------------------------------------------------------------------------
+
+/**
+ * Emergency compliance controls, feature-detected.
+ *
+ * `paused()` was added to DeferralVenue after the Sepolia deployment was made
+ * and verified, so the live instance does not have it. Calling a function that
+ * is not there returns empty data and ethers throws a decode error — which is a
+ * perfectly good capability probe. The panel then says the deployment predates
+ * the feature instead of offering a button that cannot work.
+ */
+async function refreshBreaker() {
+  const stateEl = el("adminState");
+  const noteEl = el("adminNote");
+  const pauseBtn = el("btnPause") as HTMLButtonElement | null;
+  const freezeBtn = el("btnFreeze") as HTMLButtonElement | null;
+  if (!stateEl || !pauseBtn || !freezeBtn) return;
+
+  const isAuditor =
+    !!state.account && state.account.toLowerCase() === state.auditor.toLowerCase();
+
+  if (!state.venue) {
+    stateEl.textContent = "No venue configured.";
+    return;
+  }
+
+  if (!state.breaker.checked) {
+    try {
+      state.breaker.paused = await state.venue.paused();
+      state.breaker.supported = true;
+    } catch {
+      state.breaker.supported = false;
+    }
+    state.breaker.checked = true;
+  }
+
+  if (!state.breaker.supported) {
+    stateEl.innerHTML = `<strong>Not available on this deployment.</strong> The live Sepolia venue
+      was deployed and Etherscan-verified before circuit breakers were added, so it has no
+      <span class="mono">paused()</span>. The controls exist in
+      <span class="mono">DeferralVenue.sol</span> and are covered by tests; a redeploy enables them.`;
+    pauseBtn.disabled = true;
+    freezeBtn.disabled = true;
+    if (noteEl) noteEl.textContent = "";
+    return;
+  }
+
+  try {
+    state.breaker.paused = await state.venue.paused();
+  } catch {
+    /* keep the last known value */
+  }
+
+  stateEl.innerHTML = state.breaker.paused
+    ? `<strong>Order book paused.</strong> New asks and fills revert. Settled trades are untouched.`
+    : `<strong>Order book live.</strong> Orders and fills are accepted normally.`;
+
+  pauseBtn.textContent = state.breaker.paused ? "Resume order book" : "Pause order book";
+  pauseBtn.disabled = !isAuditor;
+  freezeBtn.disabled = !isAuditor || !fills.length;
+
+  if (noteEl)
+    noteEl.textContent = isAuditor
+      ? "Pausing halts new orders and fills. It cannot reverse a settled trade — settlement has already moved encrypted balances, and there is no un-transfer."
+      : "Connect the regulator wallet to arm these controls.";
+}
+
+async function onPause() {
+  if (!state.venue || !state.signer) return;
+  const next = !state.breaker.paused;
+  await asyncAction(
+    {
+      button: el("btnPause") as HTMLButtonElement,
+      label: next ? "Pause order book" : "Resume order book",
+      onSettled: async () => {
+        state.breaker.checked = false;
+        await refreshBreaker();
+      },
+    },
+    async () => (await state.venue!.setPaused(next)).wait(),
+  );
+}
+
+async function onFreeze() {
+  if (!state.venue || !state.signer) return;
+  const raw = window.prompt(
+    "Freeze which fill id? Freezing blocks its tape print until the regulator clears it.",
+  );
+  if (!raw) return;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id < 0 || id >= fills.length) {
+    toast("error", "No such fill", `Fill ids run 0–${Math.max(0, fills.length - 1)}.`);
+    return;
+  }
+  await asyncAction(
+    {
+      button: el("btnFreeze") as HTMLButtonElement,
+      label: `Freeze fill #${id}`,
+      onSettled: refresh,
+    },
+    async () => (await state.venue!.setFillFrozen(BigInt(id), true)).wait(),
+  );
 }
 
 async function renderRegister() {
@@ -1333,6 +1706,254 @@ async function renderRegister() {
 }
 
 // ---------------------------------------------------------------------------
+// order entry terminal
+// ---------------------------------------------------------------------------
+
+/** Which escrow leg funds the current side: buys spend cash, sells post shares. */
+const fundingLeg = (): "cash" | "shares" => (entry.side === "buy" ? "cash" : "shares");
+
+function renderAllocSource() {
+  const srcEl = el("allocSource");
+  const noteEl = el("allocNote");
+  if (!srcEl) return;
+
+  const leg = fundingLeg();
+  const bal = state.escrow[leg];
+
+  if (!state.account) {
+    srcEl.textContent = "connect a wallet";
+    if (noteEl) noteEl.textContent = "";
+    return;
+  }
+  if (bal === null) {
+    srcEl.textContent = `${leg} — encrypted`;
+    if (noteEl)
+      noteEl.textContent =
+        "Your escrow has not resolved yet, so the slider has nothing to size against. Enter a quantity directly.";
+    return;
+  }
+
+  srcEl.textContent = `${fmt(bal)} ${leg}`;
+  if (noteEl)
+    noteEl.textContent =
+      entry.side === "buy"
+        ? "Percentage of escrowed cash, converted at your limit price."
+        : "Percentage of escrowed shares.";
+}
+
+/** Slider/preset → quantity. Buying converts cash to a share count at the limit. */
+function applyAllocation(pct: number) {
+  const qtyEl = el("entryQty") as HTMLInputElement | null;
+  const bal = state.escrow[fundingLeg()];
+  if (!qtyEl || bal === null) {
+    toast("info", "Escrow not resolved", "The percentage needs a decrypted balance to size against.");
+    return;
+  }
+
+  if (entry.side === "sell") {
+    qtyEl.value = ((bal * BigInt(pct)) / 100n).toString();
+    return;
+  }
+
+  // Buying: cash buys qty = cash × SCALE ÷ price. At market the ask is unknown
+  // — it is a ciphertext — so there is no honest conversion to make.
+  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  if (entry.type === "market" || price <= 0n) {
+    toast(
+      "info",
+      "Set a limit price first",
+      "Converting cash into a share count needs a price. At market the ask is a ciphertext, so the venue cannot size it for you.",
+    );
+    return;
+  }
+  qtyEl.value = (((bal * BigInt(pct)) / 100n) * state.priceScale / price).toString();
+}
+
+/** Repaint the terminal for the current side and order type. */
+function renderEntry() {
+  const buy = entry.side === "buy";
+  const market = entry.type === "market";
+
+  el("sideBuy")?.classList.toggle("on", buy);
+  el("sideSell")?.classList.toggle("on", !buy);
+  el("sideBuy")?.setAttribute("aria-pressed", String(buy));
+  el("sideSell")?.setAttribute("aria-pressed", String(!buy));
+
+  document
+    .querySelectorAll<HTMLElement>("[data-ordertype]")
+    .forEach((n) => n.classList.toggle("on", n.dataset.ordertype === entry.type));
+
+  // Buy hits one resting order; sell creates one, so the target picker and the
+  // expiry/bucket controls swap over.
+  el("targetField")?.classList.toggle("hidden", !buy);
+  el("expiryField")?.classList.toggle("hidden", buy);
+
+  const priceEl = el("entryPrice") as HTMLInputElement | null;
+  const priceLabel = el("priceLabel");
+  const priceNote = el("priceNote");
+  const marketPrice = market;
+
+  if (priceEl) {
+    priceEl.disabled = marketPrice;
+    priceEl.required = !marketPrice;
+    if (marketPrice) priceEl.value = "";
+  }
+  if (priceLabel) priceLabel.textContent = buy ? "Limit bid" : "Limit price";
+  priceNote?.classList.toggle("hidden", !marketPrice);
+
+  const submit = el("entrySubmit") as HTMLButtonElement | null;
+  if (submit) {
+    submit.textContent = buy
+      ? market
+        ? "Buy at market"
+        : "Buy — limit"
+      : market
+        ? "Market sell unavailable"
+        : "Post sell offer";
+    submit.classList.toggle("submit-buy", buy);
+    submit.classList.toggle("submit-sell", !buy);
+    // A market sell has no resting bids to lift. Refuse it in the UI rather
+    // than submit something that cannot mean anything on-chain.
+    submit.disabled = !buy && market;
+  }
+
+  const explain = el("entryExplain");
+  if (explain) {
+    explain.innerHTML = buy
+      ? market
+        ? `<strong>Market buy.</strong> Executes against best available dark liquidity: your bid is
+           set high enough to cross whatever the ask turns out to be. You are still debited
+           <span class="mono">qty × ask ÷ 1e4</span>, never your bid, so bidding high does not
+           overpay.`
+        : `<strong>Limit buy.</strong> Your bid is encrypted and compared to the encrypted ask
+           inside the TEE. If it does not cross, the fill settles for <strong>zero</strong> — no
+           revert, because reverting would tell you where the ask sits.`
+      : market
+        ? `<strong>Market sell is unavailable on this venue.</strong> The book is ask-only (RFQ):
+           there are no resting bids to lift. Post a limit offer and wait to be hit.`
+        : `<strong>Limit sell.</strong> Posts resting liquidity at your price. Size and price are
+           encrypted before they leave this browser; you become the maker and the
+           <em>reporting entity</em> for any fill.`;
+  }
+
+  const unit = el("qtyUnit");
+  if (unit) unit.textContent = state.instrument.symbol;
+
+  renderTargetOptions();
+  renderAllocSource();
+}
+
+/** Open orders the connected account may hit — never its own (self-fill reverts). */
+function renderTargetOptions() {
+  const sel = el("targetOrder") as HTMLSelectElement | null;
+  if (!sel) return;
+
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  const acct = state.account.toLowerCase();
+  const hittable = orders.filter(
+    (o) =>
+      o.stateCode === OrderState.Open &&
+      o.expiry > now &&
+      (!acct || o.maker.toLowerCase() !== acct),
+  );
+
+  const keep = sel.value;
+  sel.innerHTML = hittable.length
+    ? hittable
+        .reverse()
+        .map(
+          (o) =>
+            `<option value="${o.id}">#${o.id} · maker ${escapeHtml(shortAddr(o.maker))} · size sealed</option>`,
+        )
+        .join("")
+    : `<option value="">No resting orders you can hit</option>`;
+  if (keep && hittable.some((o) => String(o.id) === keep)) sel.value = keep;
+}
+
+async function onEntrySubmit(e: Event) {
+  e.preventDefault();
+  if (!requireReady()) return;
+
+  const qty = BigInt((el("entryQty") as HTMLInputElement)?.value || "0");
+  if (qty <= 0n) {
+    toast("error", "Quantity must be positive");
+    return;
+  }
+
+  if (entry.side === "buy") {
+    const target = (el("targetOrder") as HTMLSelectElement)?.value;
+    if (!target) {
+      toast("error", "No order selected", "A buy takes liquidity, so it needs a resting order to hit.");
+      return;
+    }
+    const bucket = Number((el("entryBucket") as HTMLSelectElement)?.value ?? Bucket.LargeInScale);
+
+    let bid: bigint;
+    if (entry.type === "market") {
+      bid = MARKET_BID;
+    } else {
+      bid = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+      if (bid <= 0n) {
+        toast("error", "Limit bid must be positive");
+        return;
+      }
+    }
+
+    await asyncAction(
+      {
+        button: el("entrySubmit") as HTMLButtonElement,
+        label: `${entry.type === "market" ? "Market" : "Limit"} buy #${target}`,
+        async: true,
+        onSettled: refresh,
+      },
+      async () => {
+        const b = await encryptInput(bid, CONFIG.venue);
+        const q = await encryptInput(qty, CONFIG.venue);
+        const tx = await state.venue!.fill(BigInt(target), b.handle, q.handle, b.proof, q.proof, bucket);
+        return tx.wait();
+      },
+    );
+    return;
+  }
+
+  // ---- sell: post an ask ----
+  if (entry.type === "market") {
+    toast("error", "Market sell unavailable", "This venue is ask-only — there are no resting bids to lift.");
+    return;
+  }
+
+  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  if (price <= 0n) {
+    toast("error", "Limit price must be positive");
+    return;
+  }
+
+  const expiry = entry.gtc
+    ? GTC_EXPIRY
+    : BigInt(Math.floor(Date.now() / 1000)) +
+      BigInt((el("entryExpiry") as HTMLInputElement)?.value || "60") * 60n;
+
+  await asyncAction(
+    { button: el("entrySubmit") as HTMLButtonElement, label: "Post sell offer", async: true, onSettled: refresh },
+    async () => {
+      const q = await encryptInput(qty, CONFIG.venue);
+      const p = await encryptInput(price, CONFIG.venue);
+      const tx = await state.venue!.postAsk(q.handle, p.handle, q.proof, p.proof, expiry);
+      const receipt = await tx.wait();
+      // Remember the size so this order can show a real fill percentage later.
+      // The id is the pre-push array length, i.e. the count before this post.
+      try {
+        const id = (await count("orders")) - 1;
+        if (id >= 0) rememberPosted(id, qty);
+      } catch {
+        /* progress bar degrades to "size not disclosed" — never to a guess */
+      }
+      return receipt;
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // writes
 // ---------------------------------------------------------------------------
 
@@ -1356,12 +1977,14 @@ async function onDeposit(e: Event) {
   e.preventDefault();
   if (!requireReady()) return;
 
-  const amount = BigInt(($("depositAmount") as HTMLInputElement).value || "0");
+  const typed = BigInt(($("depositAmount") as HTMLInputElement).value || "0");
   const leg = ($("depositLeg") as HTMLSelectElement).value as "cash" | "shares";
-  if (amount <= 0n) {
+  if (typed <= 0n) {
     toast("error", "Amount must be positive");
     return;
   }
+
+  const amount = withBuffer(typed);
 
   await asyncAction(
     {
@@ -1381,48 +2004,63 @@ async function onDeposit(e: Event) {
   );
 }
 
-async function onPost(e: Event) {
-  e.preventDefault();
-  if (!requireReady()) return;
+/**
+ * Settlement overhead buffer.
+ *
+ * The failure this prevents is specific and silent. `fill` computes
+ * `need = qty × price ÷ PRICE_SCALE` with integer division, then gates the
+ * whole trade on `Nox.transfer`'s success flag, which is just
+ * `balance >= need`. Fund the exact quantity and any rounding at the price
+ * scale leaves you a unit short — at which point the transfer reports false,
+ * `qtyOut` is selected to zero, and the fill settles for NOTHING. There is no
+ * revert and no error, because a revert would leak the shortfall. So a
+ * shortfall looks exactly like a trade that simply did not happen.
+ *
+ * A few basis points of headroom removes that class of failure entirely, and
+ * escrow is withdrawable, so the buffer is not a cost.
+ */
+const BUFFER_BPS = 50n; // 0.5%
 
-  const qty = BigInt(($("qty") as HTMLInputElement).value || "0");
-  const price = BigInt(($("price") as HTMLInputElement).value || "0");
-  const minutes = BigInt(($("expiry") as HTMLInputElement).value || "60");
-  if (qty <= 0n || price <= 0n) {
-    toast("error", "Quantity and price must both be positive");
-    return;
-  }
-
-  const expiry = BigInt(Math.floor(Date.now() / 1000)) + minutes * 60n;
-
-  await asyncAction(
-    { button: document.querySelector<HTMLButtonElement>(`[data-async="post"]`), label: "Post ask", async: true, onSettled: refresh },
-    async () => {
-      const q = await encryptInput(qty, CONFIG.venue);
-      const p = await encryptInput(price, CONFIG.venue);
-      const tx = await state.venue!.postAsk(q.handle, p.handle, q.proof, p.proof, expiry);
-      return tx.wait();
-    },
-  );
+function withBuffer(amount: bigint): bigint {
+  const on = (el("depositBuffer") as HTMLInputElement | null)?.checked;
+  return on ? amount + (amount * BUFFER_BPS) / 10_000n : amount;
 }
 
-async function onFill(orderId: number, bucket: number, button: HTMLButtonElement) {
-  if (!requireReady()) return;
+function renderDepositPreview() {
+  const out = el("depositPreview");
+  if (!out) return;
+  const typed = BigInt((el("depositAmount") as HTMLInputElement)?.value || "0");
+  if (typed <= 0n) {
+    out.textContent = "";
+    return;
+  }
+  const total = withBuffer(typed);
+  out.textContent =
+    total === typed
+      ? `Depositing exactly ${fmt(typed)} — no headroom for rounding at settlement.`
+      : `Depositing ${fmt(total)} (${fmt(typed)} + ${fmt(total - typed)} buffer).`;
+}
 
-  const bidRaw = window.prompt("Your bid price (scaled, e.g. 987500):");
-  if (!bidRaw) return;
-  const qtyRaw = window.prompt("Quantity you want:");
-  if (!qtyRaw) return;
+/**
+ * Loads a book row into the entry terminal instead of filling it inline.
+ *
+ * The old path asked for bid and size through two `window.prompt` calls, which
+ * is not how anyone trades and gave no chance to see the balance being spent.
+ * A book row is now a route into the terminal, where the order type, bucket and
+ * allocation are all visible before anything is signed.
+ */
+function loadIntoTerminal(orderId: number, bucket: number) {
+  entry.side = "buy";
+  entry.type = "limit";
+  renderEntry();
 
-  await asyncAction(
-    { button, label: `Fill #${orderId}`, async: true, onSettled: refresh },
-    async () => {
-      const bid = await encryptInput(BigInt(bidRaw), CONFIG.venue);
-      const qty = await encryptInput(BigInt(qtyRaw), CONFIG.venue);
-      const tx = await state.venue!.fill(orderId, bid.handle, qty.handle, bid.proof, qty.proof, bucket);
-      return tx.wait();
-    },
-  );
+  const sel = el("targetOrder") as HTMLSelectElement | null;
+  if (sel) sel.value = String(orderId);
+  const bucketSel = el("entryBucket") as HTMLSelectElement | null;
+  if (bucketSel) bucketSel.value = String(bucket);
+
+  el("colEntry")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  (el("entryQty") as HTMLInputElement | null)?.focus();
 }
 
 async function onWrap(e: Event) {
@@ -1476,9 +2114,15 @@ async function onWrap(e: Event) {
 document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
 
-  const fillBtn = t.closest?.("[data-fill]") as HTMLButtonElement | null;
-  if (fillBtn) {
-    void onFill(Number(fillBtn.dataset.fill), Number(fillBtn.dataset.bucket), fillBtn);
+  const tradeBtn = t.closest?.("[data-trade]") as HTMLButtonElement | null;
+  if (tradeBtn) {
+    loadIntoTerminal(Number(tradeBtn.dataset.trade), Number(tradeBtn.dataset.bucket));
+    return;
+  }
+
+  const revealBtn = t.closest?.("[data-reveal]") as HTMLButtonElement | null;
+  if (revealBtn) {
+    void revealAuditorValue(Number(revealBtn.dataset.reveal), revealBtn);
     return;
   }
 
@@ -1575,12 +2219,99 @@ function initResizers() {
 // ---------------------------------------------------------------------------
 
 wireCopyButtons(document);
+initTooltips();
 
 $("connect").addEventListener("click", () => connect().catch((e) => banner(e.message, "error")));
 $("disconnect").addEventListener("click", () => disconnect().catch((e) => banner(e.message, "error")));
 $("depositForm").addEventListener("submit", (e) => void onDeposit(e));
 $("wrapForm").addEventListener("submit", (e) => void onWrap(e));
-$("postForm").addEventListener("submit", (e) => void onPost(e));
+$("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
+
+// --- instrument selector
+{
+  const sel = el("pairSelect") as HTMLSelectElement | null;
+  if (sel) {
+    sel.innerHTML = INSTRUMENTS.map(
+      (i, idx) =>
+        `<option value="${idx}">${escapeHtml(pairLabel(i))}${i.live ? "" : " · no book"}</option>`,
+    ).join("");
+    sel.addEventListener("change", () => {
+      state.instrument = INSTRUMENTS[Number(sel.value)] ?? INSTRUMENTS[0];
+      if (!state.instrument.live) {
+        banner(
+          `${pairLabel(state.instrument)} has no deployed token on this venue — ${
+            state.instrument.name
+          } is listed to show the selector, not to imply a book. Only ${INSTRUMENTS[0].symbol} trades here.`,
+          "info",
+        );
+      } else {
+        clearBanner();
+      }
+      renderEntry();
+      tickerSignature = "";
+      render();
+    });
+  }
+}
+
+// --- order entry: side, type, allocation, GTC
+el("sideBuy")?.addEventListener("click", () => {
+  entry.side = "buy";
+  renderEntry();
+});
+el("sideSell")?.addEventListener("click", () => {
+  entry.side = "sell";
+  renderEntry();
+});
+
+document.querySelectorAll<HTMLElement>("[data-ordertype]").forEach((b) =>
+  b.addEventListener("click", () => {
+    entry.type = b.dataset.ordertype as OrderType;
+    renderEntry();
+  }),
+);
+
+document.querySelectorAll<HTMLElement>("[data-alloc]").forEach((b) =>
+  b.addEventListener("click", () => {
+    const pct = Number(b.dataset.alloc);
+    (el("allocRange") as HTMLInputElement).value = String(pct);
+    applyAllocation(pct);
+  }),
+);
+
+el("allocRange")?.addEventListener("input", (e) =>
+  applyAllocation(Number((e.target as HTMLInputElement).value)),
+);
+
+el("entryGtc")?.addEventListener("change", (e) => {
+  entry.gtc = (e.target as HTMLInputElement).checked;
+  const exp = el("entryExpiry") as HTMLInputElement | null;
+  if (exp) exp.disabled = entry.gtc;
+});
+
+// --- deposit buffer preview
+el("depositAmount")?.addEventListener("input", renderDepositPreview);
+el("depositBuffer")?.addEventListener("change", renderDepositPreview);
+
+// --- compliance chip opens the KYC explainer
+$("complianceChip").addEventListener("click", openKyc);
+$("complianceChip").addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
+    e.preventDefault();
+    openKyc();
+  }
+});
+el("kycClose")?.addEventListener("click", closeKyc);
+el("kycModal")?.addEventListener("click", (e) => {
+  if (e.target === el("kycModal")) closeKyc(); // click the backdrop, not the card
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeKyc();
+});
+
+// --- circuit breakers
+el("btnPause")?.addEventListener("click", () => void onPause());
+el("btnFreeze")?.addEventListener("click", () => void onFreeze());
 
 // --- wallet popover: position + funding + instructions collapse behind the icon
 {
@@ -1688,6 +2419,8 @@ setInterval(() => {
 
 applyColumnWidths();
 initResizers();
+renderEntry();
+renderDepositPreview();
 setView("trader");
 
 if (!CONFIG.venue) {
