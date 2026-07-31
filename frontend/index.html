@@ -20,6 +20,16 @@
         <path d="M2 6.2 9 2.4l7 3.8v5.6L9 15.6 2 11.8Z" />
         <path d="M2 6.2 9 10l7-3.8M9 10v5.6" />
       </symbol>
+      <symbol id="i-wallet" viewBox="0 0 18 18">
+        <rect x="2.2" y="4.3" width="13.6" height="9.8" rx="2.2" />
+        <path d="M2.2 7.4h13.6" />
+        <circle cx="12.4" cy="10.8" r="0.9" />
+      </symbol>
+      <symbol id="i-history" viewBox="0 0 18 18">
+        <path d="M3.4 9a5.6 5.6 0 1 1 1.7 4" />
+        <path d="M2.6 12.6 5.1 13l.4-2.5" />
+        <path d="M9 5.6V9l2.3 1.4" />
+      </symbol>
     </svg>
 
     <header class="topbar">
@@ -38,6 +48,83 @@
       <div class="wallet">
         <span id="complianceChip" class="pill muted">compliance unknown</span>
         <span id="netLabel" class="pill muted">not connected</span>
+
+        <!-- Your position + funding collapse behind this wallet button. -->
+        <div class="wallet-menu">
+          <button
+            id="walletBtn"
+            class="icon-btn"
+            type="button"
+            aria-label="Your position and funding"
+            aria-expanded="false"
+            title="Your position, funding and instructions"
+          >
+            <svg><use href="#i-wallet" /></svg>
+          </button>
+
+          <div id="walletPanel" class="popover hidden" role="dialog" aria-label="Wallet">
+            <div class="popover-head">
+              <h3>Your position</h3>
+              <span class="hint">decrypted with grants only you hold</span>
+            </div>
+
+            <div id="complianceNotice"></div>
+
+            <div class="grid2">
+              <div class="tile">
+                <label>Escrowed cash</label>
+                <div id="cashValue" class="plain">—</div>
+                <div class="row-title">
+                  <span id="cashLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
+                  <span id="cashStatus" class="status submitted">no handle</span>
+                </div>
+                <div id="cashHandle" class="cipher"></div>
+              </div>
+              <div class="tile">
+                <label>Escrowed shares</label>
+                <div id="sharesValue" class="plain">—</div>
+                <div class="row-title">
+                  <span id="sharesLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
+                  <span id="sharesStatus" class="status submitted">no handle</span>
+                </div>
+                <div id="sharesHandle" class="cipher"></div>
+              </div>
+            </div>
+
+            <div class="subsection">
+              <h4><span class="step">1</span> Fund escrow</h4>
+              <p class="hint left">
+                Cash to fill, shares to post. An unfunded order settles for zero rather than
+                failing &mdash; reverting would leak the shortfall.
+              </p>
+              <form id="depositForm" class="form">
+                <div class="field">
+                  <label for="depositAmount">Amount</label>
+                  <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
+                </div>
+                <div class="field">
+                  <label for="depositLeg">Leg</label>
+                  <select id="depositLeg">
+                    <option value="cash">Cash — to fill</option>
+                    <option value="shares">Shares — to post</option>
+                  </select>
+                </div>
+                <button type="submit" class="primary" data-async="deposit">Deposit</button>
+              </form>
+            </div>
+
+            <details class="howto">
+              <summary>How to fund this wallet</summary>
+              <ol class="howto-list">
+                <li>Connect a wallet on <strong>Ethereum Sepolia</strong>. Wrong network? Switch chains in MetaMask.</li>
+                <li>Get test ETH for gas from a Sepolia faucet.</li>
+                <li>Your address must be registered in the ERC-3643 IdentityRegistry, or every venue call reverts with <span class="mono">not verified</span>.</li>
+                <li>Deposit <strong>cash</strong> to take offers, or wrap and deposit <strong>shares</strong> to post them, using the form above.</li>
+              </ol>
+            </details>
+          </div>
+        </div>
+
         <button id="connect" class="primary">Connect wallet</button>
         <button id="disconnect" class="hidden small" title="Clear this site's session and return to the public read-only view">
           Disconnect
@@ -49,9 +136,28 @@
 
     <!-- ================= TRADER / MAKER — one workspace ================= -->
     <main id="viewTrader" class="workspace">
-      <!-- col: order book (side, not stacked) -->
-      <section class="col" id="colBook">
-        <div class="card fill">
+      <!-- col: your orders (primary) + collapsible book + post -->
+      <section class="col" id="colMain">
+        <!-- The order book collapses behind this button; sorting appears when open. -->
+        <div class="toolbar">
+          <button id="bookToggle" class="ghost" type="button" aria-expanded="false" aria-controls="bookPanel">
+            <svg class="ic"><use href="#i-history" /></svg>
+            <span>Order book</span>
+            <span id="bookCount" class="tag"></span>
+          </button>
+          <div id="bookSort" class="sortbar hidden" role="group" aria-label="Sort the book">
+            <span class="sortbar-label">show</span>
+            <button class="seg on" data-bookfilter="all" type="button">all</button>
+            <button class="seg" data-bookfilter="mine" type="button">mine</button>
+            <button class="seg" data-bookfilter="others" type="button">others</button>
+            <span class="sortbar-sep"></span>
+            <span class="sortbar-label">by date</span>
+            <button class="seg on" data-bookorder="new" type="button">newest</button>
+            <button class="seg" data-bookorder="old" type="button">oldest</button>
+          </div>
+        </div>
+
+        <div id="bookPanel" class="card fill hidden">
           <div class="card-head">
             <h2>Order book</h2>
             <span class="hint">dark pre-trade &mdash; sizes and prices are ciphertext</span>
@@ -60,67 +166,26 @@
             <p class="empty">Loading the public book…</p>
           </div>
         </div>
-      </section>
 
-      <div class="resizer" data-resize="w0" title="Drag to resize"></div>
-
-      <!-- col: your position + actions -->
-      <section class="col" id="colMain">
-        <div class="card mine">
+        <div class="card fill mine">
           <div class="card-head">
-            <h2>Your position</h2>
-            <span class="hint">decrypted with grants only you hold</span>
+            <h2>My orders</h2>
+            <span class="hint">cancel blocked while a fill is unresolved</span>
           </div>
-          <div id="complianceNotice"></div>
-          <div class="grid2">
-            <div class="tile">
-              <label>Escrowed cash</label>
-              <div id="cashValue" class="plain">—</div>
-              <div class="row-title">
-                <span id="cashLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
-                <span id="cashStatus" class="status submitted">no handle</span>
-              </div>
-              <div id="cashHandle" class="cipher"></div>
-            </div>
-            <div class="tile">
-              <label>Escrowed shares</label>
-              <div id="sharesValue" class="plain">—</div>
-              <div class="row-title">
-                <span id="sharesLock" class="lock"><svg><use href="#i-lock" /></svg><span>encrypted</span></span>
-                <span id="sharesStatus" class="status submitted">no handle</span>
-              </div>
-              <div id="sharesHandle" class="cipher"></div>
-            </div>
-          </div>
-
-          <div class="subsection">
-            <h3><span class="step">1</span> Fund escrow</h3>
-            <p class="hint left">
-              Cash to fill, shares to post. An unfunded order settles for zero rather than failing
-              &mdash; reverting would leak the shortfall.
-            </p>
-            <form id="depositForm" class="form">
-              <div class="field">
-                <label for="depositAmount">Amount</label>
-                <input id="depositAmount" type="number" min="1" step="1" placeholder="5000000" required />
-              </div>
-              <div class="field">
-                <label for="depositLeg">Leg</label>
-                <select id="depositLeg">
-                  <option value="cash">Cash — to fill</option>
-                  <option value="shares">Shares — to post</option>
-                </select>
-              </div>
-              <button type="submit" class="primary" data-async="deposit">Deposit</button>
-            </form>
+          <div id="myOrders" class="rows">
+            <p class="empty">Connect a wallet to see your orders.</p>
           </div>
         </div>
 
         <div class="card">
           <div class="card-head">
-            <h2><span class="step">2</span> Post an ask</h2>
+            <h2>Offer shares for sale</h2>
             <span id="lisBadge" class="pill solid" data-tip="Minimum order size is set at large-in-scale, the waiver under which the book is dark. This is DECLARED, not enforced: the contract sets no minimum, because the quantity is a ciphertext it can never read. The auditor checks the declaration against the real size.">LIS waiver ⓘ</span>
           </div>
+          <p class="hint left">
+            Post an offer to sell: your size and price are encrypted before they leave the browser,
+            so the book stays dark until settlement prints them on the deferral schedule.
+          </p>
           <form id="postForm" class="form">
             <div class="field">
               <label for="qty">Quantity</label>
@@ -134,14 +199,14 @@
               <label for="expiry">Expires in (min)</label>
               <input id="expiry" type="number" min="1" step="1" value="60" required />
             </div>
-            <button type="submit" class="primary" data-async="post">Post ask</button>
+            <button type="submit" class="primary" data-async="post">Post offer</button>
           </form>
         </div>
       </section>
 
       <div class="resizer" data-resize="w2" title="Drag to resize"></div>
 
-      <!-- col: wrapper + your orders -->
+      <!-- col: wrapper -->
       <section class="col" id="colSide">
         <div class="card">
           <div class="card-head">
@@ -179,16 +244,6 @@
             <span class="mono">depositShares</span> credits a self-declared amount. Documented in the
             README.
           </p>
-        </div>
-
-        <div class="card fill">
-          <div class="card-head">
-            <h2>Your orders</h2>
-            <span class="hint">cancel blocked while a fill is unresolved</span>
-          </div>
-          <div id="myOrders" class="rows">
-            <p class="empty">You have no orders.</p>
-          </div>
         </div>
       </section>
     </main>
@@ -255,8 +310,9 @@
         <span>THE TAPE</span>
         <span
           class="help mini"
-          data-tip="Price prints at settlement, volume on the deferral (LIS ~90s here, compressed for demo — the real regime defers to end of the following quarter). Colour tracks bucket, instrument and volume."
+          data-tip="Only prints with an open parameter show here. Price prints at settlement, volume on the deferral (LIS ~90s here, compressed for demo — the real regime defers to end of the following quarter). Colour tracks bucket, instrument and volume."
         >?</span>
+        <button id="tapeUnhide" class="tape-unhide hidden" type="button" title="Restore prints you have hidden"></button>
       </div>
       <div class="ticker-track" id="tapeTrack">
         <div class="ticker-run" id="tape">

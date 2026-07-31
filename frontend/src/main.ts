@@ -521,6 +521,54 @@ interface FillRow {
 let orders: OrderRow[] = [];
 let fills: FillRow[] = [];
 
+// ---------------------------------------------------------------------------
+// view preferences (persisted)
+// ---------------------------------------------------------------------------
+
+/**
+ * Prints the viewer has chosen to hide from the tape, forever. This is a purely
+ * local, cosmetic filter — the fill still exists on-chain and the auditor still
+ * sees it; the tape just stops showing it to this browser. Persisted so a hide
+ * survives reloads.
+ */
+const HIDDEN_KEY = "tape:hidden";
+const hiddenFills = new Set<number>(
+  (() => {
+    try {
+      return JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? "[]") as number[];
+    } catch {
+      return [];
+    }
+  })(),
+);
+function persistHidden() {
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify([...hiddenFills]));
+}
+
+/** Order-book view controls (task: sort/filter the book). */
+let bookFilter: "all" | "mine" | "others" = "all";
+let bookOrder: "new" | "old" = "new";
+
+/** The book collapses behind a button; once the user toggles it, we stop
+ *  overriding their choice on connect/disconnect. */
+let bookOpen = true;
+let bookUserToggled = false;
+
+function setBookOpen(open: boolean) {
+  bookOpen = open;
+  el("bookPanel")?.classList.toggle("hidden", !open);
+  el("bookSort")?.classList.toggle("hidden", !open);
+  const btn = el("bookToggle");
+  if (btn) btn.setAttribute("aria-expanded", String(open));
+}
+
+/** Logged-in users lead with "My orders"; the public read-only view leads with
+ *  the book. Respected only until the user opens/closes it themselves. */
+function applyBookDefault() {
+  if (bookUserToggled) return;
+  setBookOpen(!state.account);
+}
+
 /**
  * Counts come from the contract, not from logs. Hosted RPCs cap eth_getLogs at a
  * narrow range (10 blocks on Alchemy's free tier), and the Nox subgraph indexes
@@ -810,6 +858,7 @@ function render() {
   if (state.role === "auditor") {
     void renderAuditor();
   } else {
+    applyBookDefault(); // logged-in leads with My orders; read-only with the book
     renderBook();
     renderMyOrders();
   }
@@ -824,22 +873,46 @@ function orderStatusChip(o: OrderRow, expired: boolean): string {
 
 function renderBook() {
   const host = el("book");
+  const live = orders.filter((o) => o.stateCode !== OrderState.Cancelled);
+
+  // Count tag on the toggle button reflects the whole live book, not the filter.
+  const countEl = el("bookCount");
+  if (countEl) countEl.textContent = live.length ? `· ${live.length}` : "";
+
   if (!host) return;
 
   if (!state.venue) {
     host.innerHTML = `<p class="empty">Loading the public book…</p>`;
     return;
   }
-  const live = orders.filter((o) => o.stateCode !== OrderState.Cancelled);
-  if (!live.length) {
-    host.innerHTML = `<p class="empty">No orders yet. The book is empty — not hidden.</p>`;
+
+  const acct = state.account.toLowerCase();
+  const filtered = live.filter((o) => {
+    if (bookFilter === "all" || !acct) return true;
+    const mine = o.maker.toLowerCase() === acct;
+    return bookFilter === "mine" ? mine : !mine;
+  });
+
+  if (!filtered.length) {
+    const why =
+      !live.length
+        ? "No orders yet. The book is empty — not hidden."
+        : bookFilter === "mine"
+          ? "None of the open orders are yours."
+          : bookFilter === "others"
+            ? "Every open order is yours."
+            : "No orders yet. The book is empty — not hidden.";
+    host.innerHTML = `<p class="empty">${why}</p>`;
     return;
   }
 
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  host.innerHTML = [...live]
-    .reverse()
+  // Orders carry no timestamp, so "date" order is id order — ids are assigned
+  // sequentially at post time, so newest id == most recent.
+  const sorted = [...filtered].sort((a, b) => (bookOrder === "new" ? b.id - a.id : a.id - b.id));
+
+  host.innerHTML = sorted
     .map((o) => {
       const mine = o.maker.toLowerCase() === state.account.toLowerCase();
       const expired = o.expiry <= now;
@@ -944,21 +1017,48 @@ function volMagnitudeClass(v: bigint): string {
 
 let tickerSignature = "";
 
+/** Refresh the "N hidden — show" control from the current hidden set. */
+function renderUnhideControl() {
+  const btn = el("tapeUnhide");
+  if (!btn) return;
+  const n = hiddenFills.size;
+  btn.classList.toggle("hidden", n === 0);
+  if (n) btn.textContent = `${n} hidden — show`;
+}
+
 /**
- * The tape as a news-style ticker. Content is duplicated so the marquee loops
- * seamlessly, and the marquee is only rebuilt when the set of prints actually
- * changes — otherwise the once-a-second countdown tick would restart the scroll
- * every second.
+ * The tape as a news-style ticker.
+ *
+ * Two filters shape what shows: a print appears only once it has an OPEN
+ * parameter (its price has printed at settlement), and only if the viewer has
+ * not hidden it. So the tape is the public record — nothing dark, nothing the
+ * viewer chose to drop.
+ *
+ * The loop is seamless by construction: the visible run is repeated until it is
+ * at least as wide as the track, then that block is duplicated and translated by
+ * exactly its own width (-50% of the pair), so the second copy lands where the
+ * first began with no gap and no jump. Rebuilt only when the set of prints
+ * actually changes — the once-a-second countdown patches text in place.
  */
 function renderTicker() {
   const host = el("tape");
   if (!host) return;
 
-  if (!fills.length) {
-    if (tickerSignature !== "empty") {
-      host.innerHTML = `<span class="ticker-empty">No prints yet — the book is empty, not hidden.</span>`;
+  renderUnhideControl();
+
+  // Task: the tape carries only prints with an open parameter, minus anything
+  // the viewer has permanently hidden.
+  const visible = fills.filter((f) => f.pricePublic && !hiddenFills.has(f.id));
+
+  if (!visible.length) {
+    const sig = `empty:${hiddenFills.size}`;
+    if (tickerSignature !== sig) {
+      const msg = fills.length
+        ? "No open prints — sizes and prices are still dark."
+        : "No prints yet — the book is empty, not hidden.";
+      host.innerHTML = `<span class="ticker-empty">${msg}</span>`;
       host.style.animation = "none";
-      tickerSignature = "empty";
+      tickerSignature = sig;
     }
     return;
   }
@@ -967,15 +1067,14 @@ function renderTicker() {
   const token = state.instrumentSymbol || "ACME30";
   const hue = hueForToken(token);
 
-  const items = [...fills].reverse().map((f) => {
+  const items = [...visible].reverse().map((f) => {
     const lis = f.bucket === Bucket.LargeInScale;
     const passed = f.reported && now >= f.deferredUntil;
 
-    const priceCell = f.pricePublic
-      ? f.priceValue !== null
+    const priceCell =
+      f.priceValue !== null
         ? `<span class="tick-price">${fmt(f.priceValue)}</span>`
-        : `<span class="tick-held">resolving…</span>`
-      : `<span class="tick-held">withheld</span>`;
+        : `<span class="tick-held">resolving…</span>`;
 
     let volCell: string;
     if (f.volumePublic) {
@@ -1005,23 +1104,45 @@ function renderTicker() {
       <span class="pill ${lis ? "warn" : "muted"}">${lis ? "LIS" : "std"}</span>
       <span class="tick-leg"><span class="k">px</span>${priceCell}</span>
       <span class="tick-leg"><span class="k">vol</span>${volCell}</span>
+      <button class="tick-hide" data-hide="${f.id}" title="Hide this print" aria-label="Hide print #${f.id}">×</button>
     </span>`;
   });
 
-  // Rebuild only when the structure changes (ids, public flags, values). The
-  // countdown text is patched in place by the interval, not re-rendered here.
-  const sig = fills
-    .map((f) => `${f.id}:${f.pricePublic ? f.priceValue : "-"}:${f.volumePublic ? f.volumeValue : f.reported ? "r" : "u"}`)
-    .join("|");
+  // Rebuild only when the structure changes (visible ids, public flags, values,
+  // hidden set). The countdown text is patched in place by the interval.
+  const sig =
+    `h${hiddenFills.size}|` +
+    visible
+      .map((f) => `${f.id}:${f.priceValue}:${f.volumePublic ? f.volumeValue : f.reported ? "r" : "u"}`)
+      .join("|");
   if (sig === tickerSignature) return;
   tickerSignature = sig;
 
-  const run = items.join("");
-  host.innerHTML = run + run; // two copies for a seamless -50% loop
+  paintMarquee(host, items.join(""));
+}
 
-  // Constant scroll speed regardless of how many prints there are.
-  const duration = Math.max(18, fills.length * 6);
+/**
+ * Lay the run out once, measure it, repeat it until one block spans the track,
+ * then duplicate that block. Translating the pair by -50% shifts by exactly one
+ * block width, so the loop has no seam regardless of how few prints there are.
+ */
+function paintMarquee(host: HTMLElement, run: string) {
+  const track = host.parentElement;
+  const trackWidth = track?.clientWidth ?? 0;
+
+  host.style.animation = "none";
+  host.innerHTML = run; // one copy, to measure
+  const oneWidth = host.scrollWidth;
+
+  const repeats = oneWidth > 0 && trackWidth > 0 ? Math.max(1, Math.ceil(trackWidth / oneWidth)) : 1;
+  const block = run.repeat(repeats);
+  host.innerHTML = block + block; // pair; -50% == exactly one block
+
+  const blockWidth = oneWidth * repeats;
+  const duration = Math.max(18, Math.round(blockWidth / 55)); // ~constant px/s
   host.style.setProperty("--marquee-duration", `${duration}s`);
+  // Force a reflow so removing the inline "none" restarts cleanly from 0.
+  void host.offsetWidth;
   host.style.animation = "";
 }
 
@@ -1378,6 +1499,16 @@ document.addEventListener("click", (e) => {
     );
     return;
   }
+
+  // Permanently hide a print from this browser's tape. Local and cosmetic — the
+  // fill is untouched on-chain and the auditor still sees it.
+  const hideBtn = t.closest?.("[data-hide]") as HTMLButtonElement | null;
+  if (hideBtn) {
+    hiddenFills.add(Number(hideBtn.dataset.hide));
+    persistHidden();
+    renderTicker();
+    return;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1390,8 +1521,7 @@ document.addEventListener("click", (e) => {
  * layout someone sets up for filming stays put.
  */
 const COLUMN_LIMITS: Record<string, [number, number]> = {
-  w0: [240, 620], // order book column
-  w2: [260, 620], // wrapper / orders column
+  w2: [260, 620], // wrapper column (trader)
   wa: [300, 720], // auditor side column
 };
 
@@ -1451,6 +1581,73 @@ $("disconnect").addEventListener("click", () => disconnect().catch((e) => banner
 $("depositForm").addEventListener("submit", (e) => void onDeposit(e));
 $("wrapForm").addEventListener("submit", (e) => void onWrap(e));
 $("postForm").addEventListener("submit", (e) => void onPost(e));
+
+// --- wallet popover: position + funding + instructions collapse behind the icon
+{
+  const btn = el("walletBtn");
+  const panel = el("walletPanel");
+  const setOpen = (open: boolean) => {
+    panel?.classList.toggle("hidden", !open);
+    btn?.setAttribute("aria-expanded", String(open));
+  };
+  btn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(panel?.classList.contains("hidden") ?? false);
+  });
+  // Click-away and Escape close it; clicks inside the panel do not.
+  document.addEventListener("click", (e) => {
+    if (!panel || panel.classList.contains("hidden")) return;
+    const t = e.target as Node;
+    if (!panel.contains(t) && t !== btn && !btn?.contains(t)) setOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setOpen(false);
+  });
+}
+
+// --- order book: collapse behind the history button; sort/filter when open
+el("bookToggle")?.addEventListener("click", () => {
+  bookUserToggled = true;
+  setBookOpen(el("bookPanel")?.classList.contains("hidden") ?? true);
+});
+
+el("bookSort")?.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest?.("[data-bookfilter],[data-bookorder]") as
+    | HTMLElement
+    | null;
+  if (!b) return;
+  if (b.dataset.bookfilter) {
+    bookFilter = b.dataset.bookfilter as typeof bookFilter;
+    b.parentElement
+      ?.querySelectorAll("[data-bookfilter]")
+      .forEach((n) => n.classList.toggle("on", n === b));
+  } else if (b.dataset.bookorder) {
+    bookOrder = b.dataset.bookorder as typeof bookOrder;
+    b.parentElement
+      ?.querySelectorAll("[data-bookorder]")
+      .forEach((n) => n.classList.toggle("on", n === b));
+  }
+  renderBook();
+});
+
+// --- tape: restore everything the viewer has hidden
+el("tapeUnhide")?.addEventListener("click", () => {
+  hiddenFills.clear();
+  persistHidden();
+  renderTicker();
+});
+
+// The marquee width is measured, so a viewport change must rebuild it.
+{
+  let t: ReturnType<typeof setTimeout>;
+  window.addEventListener("resize", () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      tickerSignature = "";
+      renderTicker();
+    }, 200);
+  });
+}
 
 /**
  * The wallet can change identity with no click of ours, which is the same hazard
