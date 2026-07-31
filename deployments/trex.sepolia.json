@@ -42,6 +42,34 @@
       "identity": "0x0424BD62F15449219E772a018Af1C7b38DE8DDE7",
       "country": 250,
       "verified": true
+    },
+    "0xd673ad276a0ea96d346fd6727cee8cd8074826cc": {
+      "identity": "0x28d138D619aAA2219Caa346baDA26f4086E12752",
+      "country": 250,
+      "verified": true
+    },
+    "0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b": {
+      "identity": "0x642EAd06a8e706030FF211B59C9764416976B3D5",
+      "country": 250,
+      "verified": true
+    }
+  },
+  "instruments": {
+    "AAPL.rwa": {
+      "name": "Apple Inc. tokenised equity",
+      "token": "0xDd2B5764dE8C58e2ab1482606bDDE5EdFb9BAf53",
+      "modularCompliance": "0x3906E5710F6C00B63c046f35344B7Af1dDC14D9d",
+      "countryRestrictModule": "0x5924EB886455E8AE000E9Cb1a451afCe1C2Afbc1",
+      "supplyLimitModule": "0x6e1eb6A09b9935421135A19c9EAa8fb834A35d82",
+      "deployedAt": "2026-07-31T19:20:33.629Z"
+    },
+    "TSLA.rwa": {
+      "name": "Tesla Inc. tokenised equity",
+      "token": "0x275E645aF19e67BA5575E76814F4ecC14362d982",
+      "modularCompliance": "0xc689449C7ec1A26305a432B8ec23fE052bd44D27",
+      "countryRestrictModule": "0x23C5b175C1912593A2C840c80AA482706698Ff2d",
+      "supplyLimitModule": "0xf210038740Ba72DA2f6A35aA7BD6Dd0989A9036A",
+      "deployedAt": "2026-07-31T19:24:21.634Z"
     }
   }
 }

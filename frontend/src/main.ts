@@ -864,17 +864,16 @@ async function count(which: "orders" | "fills"): Promise<number> {
   }
 }
 
-/** Reads the bond symbol once, so the ticker can colour by instrument. */
-async function ensureInstrumentSymbol() {
-  if (state.instrumentSymbol || !CONFIG.sharesWrapper) return;
-  try {
-    const provider = state.signer ?? readOnlyProvider();
-    const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
-    const bond = new Contract(await wrapper.underlying(), ERC20_ABI, provider as any);
-    state.instrumentSymbol = await bond.symbol();
-  } catch {
-    state.instrumentSymbol = "";
-  }
+/**
+ * The instrument symbol now comes from the selector, not from a chain read.
+ *
+ * It used to be resolved off the wrapper's underlying token, which worked while
+ * there was exactly one instrument. With three, the selected pair is the answer
+ * — and it is available immediately, so the ticker colours correctly on the
+ * first paint instead of after a round-trip.
+ */
+function ensureInstrumentSymbol() {
+  state.instrumentSymbol = state.instrument.symbol;
 }
 
 async function isPublic(handle: string): Promise<boolean> {
@@ -976,7 +975,7 @@ async function refreshOnce() {
   // stuck on "Loading" whenever the gateway was sluggish. The book and ticker
   // are ready to show "withheld"/"resolving" placeholders, so they render
   // immediately and fill in as values arrive.
-  await ensureInstrumentSymbol();
+  ensureInstrumentSymbol();
   render();
 
   // Everything below touches the gateway — fire it without blocking the paint.
@@ -1026,7 +1025,10 @@ async function refreshWalletBalances() {
   const provider = state.signer ?? readOnlyProvider();
 
   for (const [leg, address] of [
-    ["shares", CONFIG.bondToken],
+    // Shares follow the SELECTED instrument, so switching the pair changes what
+    // the slider sizes against. Cash is one token across all pairs — everything
+    // here quotes against the same cash leg.
+    ["shares", state.instrument.token],
     ["cash", CONFIG.cashToken],
   ] as const) {
     if (!address) continue;
@@ -1111,7 +1113,10 @@ async function refreshPosition() {
 }
 
 async function refreshWrapper() {
-  if (!CONFIG.sharesWrapper || !state.account || !state.nox) return;
+  // The wrapper is per-instrument: each token has its own custody contract, so
+  // switching the pair switches which encrypted balance is being shown.
+  const wrapperAddress = state.instrument.wrapper || CONFIG.sharesWrapper;
+  if (!wrapperAddress || !state.account || !state.nox) return;
   const valueEl = el("wrappedValue");
   const statusEl = el("wrappedStatus");
   const handleEl = el("wrappedHandle");
@@ -1120,7 +1125,7 @@ async function refreshWrapper() {
 
   try {
     const provider = state.signer ?? readOnlyProvider();
-    const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
+    const wrapper = new Contract(wrapperAddress, WRAPPER_ABI, provider as any);
     const bond = new Contract(await wrapper.underlying(), ERC20_ABI, provider as any);
 
     const [decimals, bal] = await Promise.all([
@@ -2372,8 +2377,9 @@ async function onWrap(e: Event) {
     toast("error", "Connect a wallet first");
     return;
   }
-  if (!CONFIG.sharesWrapper) {
-    toast("error", "VITE_SHARES_WRAPPER is not configured");
+  const wrapperAddress = state.instrument.wrapper || CONFIG.sharesWrapper;
+  if (!wrapperAddress) {
+    toast("error", `No wrapper deployed for ${state.instrument.symbol}`);
     return;
   }
   const c = state.compliance;
@@ -2393,15 +2399,19 @@ async function onWrap(e: Event) {
   }
 
   await asyncAction(
-    { button: document.querySelector<HTMLButtonElement>(`[data-async="wrap"]`), label: "Wrap bonds", onSettled: refresh },
+    {
+      button: document.querySelector<HTMLButtonElement>(`[data-async="wrap"]`),
+      label: `Hide ${state.instrument.symbol}`,
+      onSettled: refresh,
+    },
     async () => {
-      const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, state.signer!);
+      const wrapper = new Contract(wrapperAddress, WRAPPER_ABI, state.signer!);
       const bond = new Contract(await wrapper.underlying(), ERC20_ABI, state.signer!);
       const decimals: bigint = await bond.decimals();
       const amount = parseUnits(raw, Number(decimals));
 
       // wrap() pulls via transferFrom, so the approval must be mined first.
-      const approval = await bond.approve(CONFIG.sharesWrapper, amount);
+      const approval = await bond.approve(wrapperAddress, amount);
       await approval.wait();
 
       const tx = await wrapper.wrap(amount);
@@ -2534,24 +2544,23 @@ $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
   const sel = el("pairSelect") as HTMLSelectElement | null;
   if (sel) {
     sel.innerHTML = INSTRUMENTS.map(
-      (i, idx) =>
-        `<option value="${idx}">${escapeHtml(pairLabel(i))}${i.live ? "" : " · no book"}</option>`,
+      (i, idx) => `<option value="${idx}">${escapeHtml(pairLabel(i))}</option>`,
     ).join("");
+    sel.title =
+      "All three instruments are deployed and share one IdentityRegistry. The order book is shared: DeferralVenue.Order carries no instrument field, so orders are not separated by pair.";
     sel.addEventListener("change", () => {
       state.instrument = INSTRUMENTS[Number(sel.value)] ?? INSTRUMENTS[0];
-      if (!state.instrument.live) {
-        banner(
-          `${pairLabel(state.instrument)} has no deployed token on this venue — ${
-            state.instrument.name
-          } is listed to show the selector, not to imply a book. Only ${INSTRUMENTS[0].symbol} trades here.`,
-          "info",
-        );
-      } else {
-        clearBanner();
-      }
+      const sym = el("bondSymbol");
+      if (sym) sym.textContent = state.instrument.symbol;
+
+      // Balances and the encrypted wrapper handle are per-instrument, so they
+      // are stale the moment the pair changes.
+      state.wallet = { cash: null, shares: null };
+      ensureInstrumentSymbol();
       renderEntry();
       tickerSignature = "";
       render();
+      void enrich();
     });
   }
 }

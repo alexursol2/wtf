@@ -12,5 +12,17 @@
   "auditor": "0xACc8D0072bB98eA0764704D1CA585140Fa981cc7",
   "priceScale": 10000,
   "lisDeferralSeconds": 90,
-  "wrappersDeployedAt": "2026-07-30T15:32:37.157Z"
+  "wrappersDeployedAt": "2026-07-30T15:32:37.157Z",
+  "instrumentWrappers": {
+    "AAPL.rwa": {
+      "token": "0xDd2B5764dE8C58e2ab1482606bDDE5EdFb9BAf53",
+      "wrapper": "0xd673ad276a0ea96d346fd6727cee8cd8074826cc",
+      "deployedAt": "2026-07-31T19:24:48.648Z"
+    },
+    "TSLA.rwa": {
+      "token": "0x275E645aF19e67BA5575E76814F4ecC14362d982",
+      "wrapper": "0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b",
+      "deployedAt": "2026-07-31T19:25:12.657Z"
+    }
+  }
 }

@@ -69,12 +69,16 @@ export function countryName(code: number): string {
 /**
  * Tradable instruments.
  *
- * Only ACME30 is actually deployed — it is the T-REX/ERC-3643 security token
- * this venue was built around. The other two are listed because a venue with
- * one instrument does not look like a venue, but they are marked `live: false`
- * and the UI must say so rather than pretending there is a book behind them.
- * Inventing liquidity would be the same class of lie as inventing a decrypted
- * number.
+ * All three are REAL: each has an ERC-3643 token and a ConfidentialWrapper
+ * deployed on Sepolia, sharing the one IdentityRegistry — so an address verified
+ * for one is verified for all three, and each can be held, hidden and traded.
+ *
+ * What they SHARE is the order book, and that is a contract limitation worth
+ * naming rather than hiding. `DeferralVenue.Order` carries no instrument field,
+ * so the venue cannot tell an ACME30 ask from an AAPL.rwa one; every order rests
+ * in the same book. Separating them needs `uint8 instrument` on Order and Fill
+ * and a redeploy, which would retire the currently verified venue address and
+ * the fills already printed against it. Until then the UI says so plainly.
  */
 export interface Instrument {
   /** Symbol as shown on the tape and in the selector. */
@@ -82,14 +86,34 @@ export interface Instrument {
   /** Quote currency — every pair here settles against cash escrow. */
   quote: string;
   name: string;
-  /** Whether this instrument has a deployed token and a real book. */
-  live: boolean;
+  /** Plaintext ERC-3643 token — the balance you hold before hiding it. */
+  token: string;
+  /** ERC-7984-style wrapper that takes custody and issues an encrypted balance. */
+  wrapper: string;
 }
 
 export const INSTRUMENTS: Instrument[] = [
-  { symbol: "ACME30", quote: "USD", name: "ACME 2030 senior note", live: true },
-  { symbol: "AAPL.rwa", quote: "USD", name: "Apple Inc. tokenised equity", live: false },
-  { symbol: "TSLA.rwa", quote: "USD", name: "Tesla Inc. tokenised equity", live: false },
+  {
+    symbol: "ACME30",
+    quote: "USD",
+    name: "ACME 2030 senior note",
+    token: "0xb0ba5244DF094160Ff31E523Fa5F8a51124f94E7",
+    wrapper: "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
+  },
+  {
+    symbol: "AAPL.rwa",
+    quote: "USD",
+    name: "Apple Inc. tokenised equity",
+    token: "0xDd2B5764dE8C58e2ab1482606bDDE5EdFb9BAf53",
+    wrapper: "0xd673ad276a0ea96d346fd6727cee8cd8074826cc",
+  },
+  {
+    symbol: "TSLA.rwa",
+    quote: "USD",
+    name: "Tesla Inc. tokenised equity",
+    token: "0x275E645aF19e67BA5575E76814F4ecC14362d982",
+    wrapper: "0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b",
+  },
 ];
 
 export const pairLabel = (i: Instrument) => `${i.symbol} / ${i.quote}`;

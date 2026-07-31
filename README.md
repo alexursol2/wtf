@@ -185,7 +185,19 @@ What this does and does not affect: settlement *between* parties is still exact 
 
 **Circuit breakers exist in the source but not in the live deployment.** `setPaused` / `setFillFrozen` are auditor-only and covered by tests, added after the Sepolia venue was deployed and Etherscan-verified. The frontend probes `paused()` and reports "not available on this deployment" when the call reverts, instead of rendering a control that cannot work. Both act on plaintext state deliberately: gating settlement on an encrypted flag would silently zero trades rather than stopping them. Pausing halts *new* orders and fills — it cannot reverse a settled trade, because settlement has already moved encrypted balances and there is no un-transfer. Freezing a fill therefore blocks its **disclosure**, not its economics.
 
-**Two of the three listed instruments have no book.** The pair selector lists `ACME30 / USD`, `AAPL.rwa / USD` and `TSLA.rwa / USD`; only ACME30 has a deployed T-REX token. The other two are labelled `· no book` in the dropdown and raise a banner when selected. Inventing liquidity would be the same class of lie as inventing a decrypted number.
+**All three instruments are real; the order book is shared.** `ACME30`, `AAPL.rwa` and `TSLA.rwa` each have a deployed ERC-3643 token and a `ConfidentialWrapper` on Sepolia, sharing the one `IdentityRegistry` — so an address verified for one is verified for all three, and each can be held, hidden and wrapped independently.
+
+| Instrument | Token | Wrapper |
+|---|---|---|
+| ACME30 | `0xb0ba5244…f94E7` | `0x28bf0728…b4dd8` |
+| AAPL.rwa | `0xDd2B5764…9BAf53` | `0xd673ad27…4826cc` |
+| TSLA.rwa | `0x275E645a…62d982` | `0x758c57f1…844a9b` |
+
+What they share is the **book**. `DeferralVenue.Order` carries no instrument field, so the venue cannot tell an ACME30 ask from an AAPL.rwa one and every order rests in the same book. Separating them needs `uint8 instrument` on `Order` and `Fill` plus a redeploy, which would retire the currently verified venue address and the fills already printed against it. The selector says so rather than implying three books.
+
+Each instrument gets its own `ModularCompliance` because `bindToken` binds one-to-one; the identity layer is deliberately *not* duplicated, since a second `IdentityRegistry` would leave every already-verified address unverified against it and the venue points at exactly one.
+
+**Escrow funding is automatic, not wallet-direct.** The manual deposit card is gone: placing an order tops escrow up inline, sized to the order with the buffer applied. It cannot be a true wallet-direct swap. `postAsk` and `fill` move value out of `escrowShares` / `escrowCash` and the venue has no path that touches a wallet — and escrow is *where the encrypted balance lives*, so pulling an exact amount per trade would publish the trade size on-chain and end the confidentiality the venue exists to provide.
 
 ---
 
