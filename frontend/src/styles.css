@@ -71,6 +71,10 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
+  /* clip, not hidden: it suppresses the horizontal scroll that hover tooltips
+     (absolute ::after near the right edge) would otherwise add, without creating
+     a scroll container — so the fixed ticker still anchors to the viewport. */
+  overflow-x: clip;
   /* Deliberately NOT transitioned. A transition on a property whose value comes
      from a custom property does not re-trigger when that variable changes: the
      element keeps its old computed colour indefinitely. Switching to the auditor
@@ -143,10 +147,19 @@ select {
   text-transform: uppercase;
 }
 
-.sub {
-  margin: 1px 0 0;
-  color: var(--ink-soft);
-  font-size: 11.5px;
+/* The role is announced by a tag, not chosen from a menu: it is decided by which
+   wallet is connected (the auditor address is fixed in the contract), so there
+   is nothing to pick. */
+.role-tag {
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 9px;
+  border: var(--border);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .wallet {
@@ -156,60 +169,143 @@ select {
   flex-wrap: wrap;
 }
 
-/* ------------------------------------------------------------- role tabs -- */
+/* -------------------------------------------------------- help / tooltip -- */
 
-/* Roles are navigation, not a filter, because the three see genuinely
-   different data. */
-.roles {
-  display: flex;
-  gap: 0;
-  border: var(--border);
-  border-radius: 999px;
-  padding: 3px;
+.help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: var(--border-soft);
+  border-radius: 50%;
   background: var(--surface);
-}
-
-.role {
-  border: none;
-  background: transparent;
   color: var(--ink-soft);
-  padding: 6px 15px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s, color 0.15s;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: help;
+  position: relative;
+  padding: 0;
+  flex: none;
 }
 
-.role:hover:not(.active) {
+.help.mini {
+  width: 15px;
+  height: 15px;
+  font-size: 10px;
+}
+
+.help:hover,
+.help:focus-visible {
   color: var(--ink);
+  border-color: var(--line);
 }
 
-.role.active {
-  background: var(--accent);
-  color: var(--accent-ink);
+/* Shared tooltip surface for anything carrying data-tip. */
+[data-tip] {
+  position: relative;
 }
 
-[data-role="auditor"] .role.active {
-  background: var(--accent);
-  color: #0a0a0a;
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: 300px;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: 0;
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s;
+  z-index: 80;
 }
 
-/* ---------------------------------------------------------------- layout -- */
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+}
 
-.shell {
-  max-width: 1120px;
+/* A tip anchored near the right edge would overflow — flip it. */
+[data-tip].tip-left::after {
+  left: auto;
+  right: 0;
+}
+
+/* Ticker tips open upward, since the ticker is at the bottom. */
+.ticker [data-tip]::after {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+/* --------------------------------------------------------- workspace grid -- */
+
+/* Panels sit side by side as resizable columns, terminal-style, rather than
+   stacked. Widths live in custom properties so the drag handles can move them,
+   and persist in localStorage. */
+.workspace {
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 20px 22px 30px;
+  padding: 18px 22px 0;
+  display: grid;
+  grid-template-columns: var(--w0, 340px) 10px minmax(0, 1fr) 10px var(--w2, 360px);
+  align-items: start;
+  gap: 0;
+  padding-bottom: 78px; /* clears the ticker */
+}
+
+#viewAuditor.workspace {
+  grid-template-columns: minmax(0, 1fr) 10px var(--wa, 420px);
+}
+
+.col {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  padding: 0 10px;
 }
 
-/* The tape is the pitch, so it is always on screen rather than behind a tab. */
-main {
-  padding-bottom: 132px;
+/* A drag handle between two columns. */
+.resizer {
+  align-self: stretch;
+  min-height: 240px;
+  cursor: col-resize;
+  position: relative;
+  border-radius: 999px;
+}
+
+.resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  transition: background 0.15s;
+}
+
+.resizer:hover::before,
+.resizer.dragging::before {
+  background: var(--accent);
+}
+
+/* A card that should stretch to fill its column (book, orders). */
+.card.fill {
+  flex: 1;
+  min-height: 0;
+}
+
+.card.fill .rows {
+  overflow-y: auto;
+  max-height: 62vh;
 }
 
 .card {
@@ -787,108 +883,177 @@ select:focus {
   word-break: break-word;
 }
 
-/* ------------------------------------------------------------------ tape -- */
+/* --------------------------------------------------------------- ticker -- */
 
-/* Always on screen. Price now, volume later is the whole thesis; it should not
-   be something you navigate to. */
-.tape-dock {
+/* The tape is a thin news-style ticker along the bottom: always on screen,
+   scrolling, because "price now, volume later" is the whole thesis and should
+   never be something you navigate to. */
+.ticker {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 30;
+  height: 46px;
+  display: flex;
+  align-items: stretch;
   background: var(--surface);
   border-top: var(--border);
 }
 
-.tape-dock-inner {
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 10px 22px 12px;
-}
-
-.tape-dock-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-
-.tape-dock-head h2 {
-  margin: 0;
-  font-size: 11.5px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.tape-strip {
-  display: flex;
-  gap: 9px;
-  overflow-x: auto;
-  padding-bottom: 3px;
-  scrollbar-width: thin;
-}
-
-.print {
-  flex: 0 0 auto;
-  min-width: 208px;
-  border: var(--border-soft);
-  border-radius: var(--r-md);
-  padding: 9px 11px;
-  background: var(--surface-2);
-}
-
-.print.gap-open {
-  border: var(--border);
-}
-
-.print-head {
+.ticker-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
-  font-size: 11px;
-  font-weight: 700;
+  padding: 0 14px;
+  border-right: var(--border);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  flex: none;
 }
 
-.print-legs {
+.ticker-label .help {
+  border-color: var(--accent-ink);
+  color: var(--accent-ink);
+  background: transparent;
+}
+
+.ticker-track {
+  flex: 1;
+  /* Without min-width:0 a flex child grows to its content width instead of
+     clipping, so the marquee (~3000px) forces document-wide horizontal scroll
+     and overflow:hidden never engages. */
+  min-width: 0;
+  overflow: hidden;
   display: flex;
-  gap: 14px;
+  align-items: center;
 }
 
-.print-leg label {
-  display: block;
+/* Two copies of the content translate left in lockstep, so it loops seamlessly.
+   Pauses on hover so a print can be read. */
+.ticker-run {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  will-change: transform;
+  animation: marquee var(--marquee-duration, 40s) linear infinite;
+}
+
+.ticker:hover .ticker-run {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-run {
+    animation: none;
+  }
+  .ticker-track {
+    overflow-x: auto;
+  }
+}
+
+.ticker-empty {
+  padding: 0 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+/* One print in the stream. The left rule and the value colours carry the
+   parameters: bucket, instrument, and how much volume once it prints. */
+.tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 16px;
+  height: 46px;
+  border-right: var(--border-soft);
+  font-size: 12.5px;
+  border-left: 3px solid var(--tick-hue, var(--ink-soft));
+}
+
+.tick-id {
+  font-weight: 800;
+  color: var(--tick-hue, var(--ink));
+}
+
+.tick-token {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--tick-hue, var(--line-soft));
+  color: var(--tick-hue, var(--ink-soft));
+}
+
+.tick-leg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.tick-leg .k {
   font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   color: var(--ink-soft);
   font-weight: 700;
 }
 
-.print-val {
-  font-size: 15px;
+.tick-price {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-}
-
-.print-val.pub {
   color: var(--public);
 }
 
-.print-val.held {
+.tick-vol {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Volume colour by magnitude — bleak when small, saturated when large. */
+.tick-vol.v-lo {
+  color: color-mix(in srgb, var(--tick-hue, var(--ink)) 55%, var(--ink-soft));
+}
+.tick-vol.v-mid {
+  color: var(--tick-hue, var(--ink));
+}
+.tick-vol.v-hi {
+  color: var(--tick-hue, var(--ink));
+  text-shadow: 0 0 12px color-mix(in srgb, var(--tick-hue, transparent) 55%, transparent);
+}
+
+.tick-held {
   font-family: var(--mono);
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 11px;
   color: var(--ink-soft);
 }
 
-/* The countdown is the deferral made watchable. */
-.print-val.count {
-  color: var(--pending);
+.tick-count {
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
+  color: var(--pending);
+}
+
+.tick-ready {
+  font-weight: 800;
+  color: var(--ok);
 }
 
 /* ------------------------------------------------------------- disclosure -- */
@@ -995,32 +1160,36 @@ footer p {
   margin: 0;
 }
 
+/* On a narrow screen the columns stack and the drag handles are pointless. */
+@media (max-width: 900px) {
+  .workspace,
+  #viewAuditor.workspace {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .resizer {
+    display: none;
+  }
+  .col {
+    padding: 0;
+    margin-bottom: 14px;
+  }
+  .card.fill .rows {
+    max-height: none;
+  }
+}
+
 @media (max-width: 560px) {
   .topbar {
     padding: 12px 16px;
   }
-  .shell,
-  .tape-dock-inner,
+  .workspace,
   footer {
     padding-left: 16px;
     padding-right: 16px;
   }
-
-  /* The dock is fixed, so anything it covers is unreachable. On a small screen
-     the explanatory caption pushed it to a quarter of the viewport; drop the
-     caption, keep the prints, and reserve exactly what is left. */
-  .tape-dock-head .hint {
-    display: none;
-  }
-  .print {
-    min-width: 168px;
-  }
-  main {
-    padding-bottom: 176px;
-  }
   .toasts {
     right: 10px;
     left: 10px;
-    bottom: 168px;
+    bottom: 58px;
   }
 }

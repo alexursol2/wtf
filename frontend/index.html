@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-role="trader">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,7 +7,6 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <!-- Reusable inline icons. -->
     <svg style="display: none">
       <symbol id="i-lock" viewBox="0 0 14 14">
         <path class="shackle" d="M4 6.5V4.2a3 3 0 0 1 6 0v2.3" />
@@ -26,17 +25,15 @@
     <header class="topbar">
       <div class="brand">
         <span class="mark"><svg><use href="#i-mark" /></svg></span>
-        <div>
-          <h1>Deferral Venue</h1>
-          <p class="sub">Price at settlement &middot; volume on the deferral &middot; regulator ahead of both</p>
-        </div>
+        <h1>Deferral Venue</h1>
+        <button
+          class="help"
+          type="button"
+          aria-label="What is this venue"
+          data-tip="Price at settlement · volume on the deferral · regulator ahead of both. An RFQ venue for tokenized bonds, dark pre-trade under a large-in-scale waiver, printing on the MiFIR post-trade schedule."
+        >?</button>
+        <span id="roleTag" class="role-tag hidden">Regulator</span>
       </div>
-
-      <nav class="roles" id="roles" aria-label="Role">
-        <button class="role active" data-role="trader">Trader</button>
-        <button class="role" data-role="maker">Maker</button>
-        <button class="role" data-role="auditor">Auditor</button>
-      </nav>
 
       <div class="wallet">
         <span id="complianceChip" class="pill muted">compliance unknown</span>
@@ -50,17 +47,31 @@
 
     <div id="banner" class="banner hidden"></div>
 
-    <div class="shell">
-      <!-- ================= YOUR POSITION — decrypted, yours ================= -->
-      <main id="viewTrader">
-        <section class="card mine">
+    <!-- ================= TRADER / MAKER — one workspace ================= -->
+    <main id="viewTrader" class="workspace">
+      <!-- col: order book (side, not stacked) -->
+      <section class="col" id="colBook">
+        <div class="card fill">
+          <div class="card-head">
+            <h2>Order book</h2>
+            <span class="hint">dark pre-trade &mdash; sizes and prices are ciphertext</span>
+          </div>
+          <div id="book" class="rows">
+            <p class="empty">Loading the public book…</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="resizer" data-resize="w0" title="Drag to resize"></div>
+
+      <!-- col: your position + actions -->
+      <section class="col" id="colMain">
+        <div class="card mine">
           <div class="card-head">
             <h2>Your position</h2>
-            <span class="hint">decrypted with grants only you hold &mdash; not market data</span>
+            <span class="hint">decrypted with grants only you hold</span>
           </div>
-
           <div id="complianceNotice"></div>
-
           <div class="grid2">
             <div class="tile">
               <label>Escrowed cash</label>
@@ -71,7 +82,6 @@
               </div>
               <div id="cashHandle" class="cipher"></div>
             </div>
-
             <div class="tile">
               <label>Escrowed shares</label>
               <div id="sharesValue" class="plain">—</div>
@@ -86,9 +96,8 @@
           <div class="subsection">
             <h3><span class="step">1</span> Fund escrow</h3>
             <p class="hint left">
-              Deposit <strong>cash</strong> to fill an order, <strong>shares</strong> to post one. An
-              unfunded order settles for zero rather than failing &mdash; reverting would leak the
-              shortfall.
+              Cash to fill, shares to post. An unfunded order settles for zero rather than failing
+              &mdash; reverting would leak the shortfall.
             </p>
             <form id="depositForm" class="form">
               <div class="field">
@@ -105,30 +114,13 @@
               <button type="submit" class="primary" data-async="deposit">Deposit</button>
             </form>
           </div>
-        </section>
+        </div>
 
-        <!-- ================= MARKET — encrypted / public ================= -->
-        <section class="card">
-          <div class="card-head">
-            <h2>Order book</h2>
-            <span class="hint">market data &mdash; dark pre-trade, sizes and prices are ciphertext</span>
-          </div>
-          <div id="book" class="rows">
-            <p class="empty">No orders yet.</p>
-          </div>
-        </section>
-      </main>
-
-      <!-- ================= MAKER ================= -->
-      <main id="viewMaker" class="hidden">
-        <section class="card mine">
+        <div class="card">
           <div class="card-head">
             <h2><span class="step">2</span> Post an ask</h2>
-            <span id="lisBadge" class="pill solid">LIS waiver</span>
+            <span id="lisBadge" class="pill solid" data-tip="Minimum order size is set at large-in-scale, the waiver under which the book is dark. This is DECLARED, not enforced: the contract sets no minimum, because the quantity is a ciphertext it can never read. The auditor checks the declaration against the real size.">LIS waiver ⓘ</span>
           </div>
-
-          <div id="complianceNoticeMaker"></div>
-
           <form id="postForm" class="form">
             <div class="field">
               <label for="qty">Quantity</label>
@@ -144,19 +136,20 @@
             </div>
             <button type="submit" class="primary" data-async="post">Post ask</button>
           </form>
+        </div>
+      </section>
 
-          <p class="note">
-            <strong>Admission at large-in-scale is declared, not enforced.</strong> The contract sets no
-            minimum size &mdash; it cannot, because the quantity is a ciphertext it can never read. The
-            waiver claim is a plaintext declaration the auditor can check against the real encrypted
-            size, exactly like the deferral flag. Detectable, not preventable.
-          </p>
-        </section>
+      <div class="resizer" data-resize="w2" title="Drag to resize"></div>
 
-        <section class="card">
+      <!-- col: wrapper + your orders -->
+      <section class="col" id="colSide">
+        <div class="card">
           <div class="card-head">
-            <h2>Confidential wrapper <span class="pill muted">layer 2</span></h2>
-            <span class="hint">custody boundary &mdash; a separate flow, not a prerequisite for trading</span>
+            <h2>Confidential wrapper</h2>
+            <span
+              class="help"
+              data-tip="Layer 2 custody boundary — plaintext bonds in, encrypted balance out. A separate flow, not a prerequisite for trading. Wrap amounts are public; confidentiality applies between wrapped holders."
+            >?</span>
           </div>
           <div class="grid2">
             <div class="tile">
@@ -182,47 +175,50 @@
             <button type="submit" class="primary" data-async="wrap">Approve &amp; wrap</button>
           </form>
           <p class="note">
-            <strong>Wrap amounts are public</strong> &mdash; they ride a plaintext ERC-20 transfer.
-            Confidentiality applies between wrapped holders, not at the custody boundary.
-            <br />
             <strong>Known gap:</strong> venue escrow is not backed by this wrapper &mdash;
             <span class="mono">depositShares</span> credits a self-declared amount. Documented in the
-            README rather than papered over.
+            README.
           </p>
-        </section>
+        </div>
 
-        <section class="card">
+        <div class="card fill">
           <div class="card-head">
             <h2>Your orders</h2>
-            <span class="hint">cancel is blocked while a fill is unresolved</span>
+            <span class="hint">cancel blocked while a fill is unresolved</span>
           </div>
           <div id="myOrders" class="rows">
             <p class="empty">You have no orders.</p>
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
+    </main>
 
-      <!-- ================= AUDITOR ================= -->
-      <main id="viewAuditor" class="hidden">
-        <section class="card">
+    <!-- ================= AUDITOR — automatic for the regulator address ================= -->
+    <main id="viewAuditor" class="workspace hidden">
+      <section class="col" id="colAudMain">
+        <div class="card">
           <div class="card-head">
             <h2>Regulator</h2>
             <span class="hint">what the auditor decrypts, against what the public can see right now</span>
           </div>
           <p class="note" id="auditorIdentity"></p>
-        </section>
+        </div>
 
-        <section class="card">
+        <div class="card fill">
           <div class="card-head">
             <h2>Fill volumes</h2>
-            <span class="hint">granted at the moment of the fill &mdash; before the public deferral elapses</span>
+            <span class="hint">granted at the fill &mdash; before the public deferral elapses</span>
           </div>
           <div id="auditorFills" class="rows">
             <p class="empty">No fills yet.</p>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section class="card">
+      <div class="resizer" data-resize="wa" title="Drag to resize"></div>
+
+      <section class="col" id="colAudSide">
+        <div class="card">
           <div class="card-head">
             <h2>Unreported fills</h2>
             <span class="hint">settled trades with no print submitted</span>
@@ -231,50 +227,40 @@
             <p class="empty">Every settled fill has been reported.</p>
           </div>
           <p class="note">
-            Reporting is an obligation on the maker, as in the real regime &mdash; the contract cannot
-            compel it. A missing print is <strong>detectable, not preventable</strong>: the auditor has
-            held the quantity handle since the fill.
+            Reporting is an obligation on the maker &mdash; the contract cannot compel it. Detectable,
+            not preventable: the auditor has held the quantity handle since the fill.
           </p>
-        </section>
+        </div>
 
-        <section class="card">
+        <div class="card">
           <div class="card-head">
             <h2>Holder register</h2>
-            <span class="hint">disclosed by the issuer on request &mdash; not automatic</span>
+            <span class="hint">disclosed by the issuer on request</span>
           </div>
           <div id="auditorRegister" class="rows">
             <p class="empty">Connect to inspect the register.</p>
           </div>
           <p class="note">
-            Fill volumes are granted automatically; the register is not. Grants are
-            <strong>permanent</strong> &mdash; Nox has no <span class="mono">removeViewer</span>. What a
-            grant does not do is follow the holder: the next transfer mints a fresh handle the grantee
-            cannot read. Rotation, not revocation.
+            Grants are <strong>permanent</strong> &mdash; Nox has no <span class="mono">removeViewer</span>.
+            A grant does not follow the holder: the next transfer mints a fresh handle. Rotation, not
+            revocation.
           </p>
-        </section>
-      </main>
-    </div>
-
-    <footer>
-      <p>
-        Grants are permanent and publication cannot be undone. Amount-gated compliance rules are not
-        enforced on the encrypted path. Both are documented limitations &mdash; see the README leak model.
-      </p>
-    </footer>
-
-    <!-- ================= THE TAPE — always on screen ================= -->
-    <div class="tape-dock">
-      <div class="tape-dock-inner">
-        <div class="tape-dock-head">
-          <h2>The tape</h2>
-          <span class="hint">
-            price prints at settlement &middot; volume prints on the deferral
-            (<span id="deferralSeconds">90</span>s, compressed for demo &mdash; the real regime defers to
-            end of the following quarter)
-          </span>
         </div>
-        <div id="tape" class="tape-strip">
-          <p class="empty">No prints yet.</p>
+      </section>
+    </main>
+
+    <!-- ================= THE TAPE — ticker along the bottom ================= -->
+    <div class="ticker" id="ticker">
+      <div class="ticker-label">
+        <span>THE TAPE</span>
+        <span
+          class="help mini"
+          data-tip="Price prints at settlement, volume on the deferral (LIS ~90s here, compressed for demo — the real regime defers to end of the following quarter). Colour tracks bucket, instrument and volume."
+        >?</span>
+      </div>
+      <div class="ticker-track" id="tapeTrack">
+        <div class="ticker-run" id="tape">
+          <span class="ticker-empty">No prints yet.</span>
         </div>
       </div>
     </div>

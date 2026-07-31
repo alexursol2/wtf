@@ -80,7 +80,7 @@ function clearBanner() {
 // state
 // ---------------------------------------------------------------------------
 
-type Role = "trader" | "maker" | "auditor";
+type Role = "trader" | "auditor";
 
 const state = {
   provider: null as BrowserProvider | null,
@@ -95,6 +95,7 @@ const state = {
   lisDeferral: 90n,
   auditor: "",
   registry: "",
+  instrumentSymbol: "",
   role: "trader" as Role,
   compliance: {
     verified: null as boolean | null,
@@ -207,31 +208,33 @@ async function tryPublicDecrypt(handle: string): Promise<bigint | null> {
 // ---------------------------------------------------------------------------
 
 /**
- * Roles are navigation because the three see genuinely different data, and the
- * auditor gets an inverted theme so the difference is legible at a glance.
+ * The role is DECIDED BY THE CONNECTED WALLET, not chosen from a menu.
  *
- * Be precise about what this is, though: the CONTRACT does not know about
- * "trader" and "maker". Any verified address may post or fill, and you become a
- * maker by posting. Only the auditor is a protocol-level role, fixed at
- * deployment and enforced by grants. This switch shapes what you are shown; it
- * does not grant anything.
+ * The auditor is the one address fixed in the contract at deployment
+ * (`venue.auditor()`), so "logging in as the auditor" literally means holding
+ * that address's key — it cannot be spoofed and there is nothing to pick.
+ * Connect that wallet and the whole interface becomes the regulator's, inverted
+ * theme and all; connect anything else, or nothing, and it is the trading view.
+ *
+ * Trader and maker are NOT separate: the contract knows neither, any verified
+ * address may post or fill, and posting is what makes you a maker. So they share
+ * one workspace. The view shapes what you see; it grants nothing.
  */
-function setRole(role: Role) {
+function setView(role: Role) {
   state.role = role;
   document.documentElement.dataset.role = role;
-
-  for (const [id, r] of [
-    ["viewTrader", "trader"],
-    ["viewMaker", "maker"],
-    ["viewAuditor", "auditor"],
-  ] as const) {
-    el(id)?.classList.toggle("hidden", role !== r);
-  }
-  document.querySelectorAll<HTMLButtonElement>(".role").forEach((b) => {
-    b.classList.toggle("active", b.dataset.role === role);
-  });
-
+  el("viewTrader")?.classList.toggle("hidden", role !== "trader");
+  el("viewAuditor")?.classList.toggle("hidden", role !== "auditor");
+  el("roleTag")?.classList.toggle("hidden", role !== "auditor");
+  applyColumnWidths();
   void refresh();
+}
+
+/** Picks the view from the connected account. Read-only defaults to trading. */
+function applyRoleForAccount() {
+  const isAuditor =
+    !!state.account && !!state.auditor && state.account.toLowerCase() === state.auditor.toLowerCase();
+  setView(isAuditor ? "auditor" : "trader");
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +296,9 @@ async function connect() {
   $("disconnect").classList.remove("hidden");
 
   clearBanner();
-  await refresh();
+  // The connected address decides the view. If it is the regulator, the whole
+  // interface becomes the auditor's; otherwise it is the trading workspace.
+  applyRoleForAccount();
 }
 
 /**
@@ -379,7 +384,7 @@ async function connectReadOnly() {
 
   $("netLabel").textContent = `${CHAIN_NAMES[CONFIG.expectedChainId]} · read-only`;
   $("netLabel").className = "pill";
-  await refresh();
+  applyRoleForAccount(); // no account → trading view, public book and tape
 }
 
 // ---------------------------------------------------------------------------
@@ -479,10 +484,8 @@ function renderComplianceNotice() {
     </div>`;
   }
 
-  for (const id of ["complianceNotice", "complianceNoticeMaker"]) {
-    const n = el(id);
-    if (n) n.innerHTML = html;
-  }
+  const n = el("complianceNotice");
+  if (n) n.innerHTML = html;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +537,19 @@ async function count(which: "orders" | "fills"): Promise<number> {
   }
 }
 
+/** Reads the bond symbol once, so the ticker can colour by instrument. */
+async function ensureInstrumentSymbol() {
+  if (state.instrumentSymbol || !CONFIG.sharesWrapper) return;
+  try {
+    const provider = state.signer ?? readOnlyProvider();
+    const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
+    const bond = new Contract(await wrapper.underlying(), ERC20_ABI, provider as any);
+    state.instrumentSymbol = await bond.symbol();
+  } catch {
+    state.instrumentSymbol = "";
+  }
+}
+
 async function isPublic(handle: string): Promise<boolean> {
   if (!state.nox || !handle || handle === ZeroHash) return false;
   try {
@@ -543,7 +559,35 @@ async function isPublic(handle: string): Promise<boolean> {
   }
 }
 
+/**
+ * Non-reentrant. Several triggers fire refresh — boot, the role switch, the
+ * account/chain listeners, the 20s poll, and the countdown reaching zero — and
+ * they used to overlap. Each run issues dozens of eth_calls through one ethers
+ * provider; a pile of concurrent runs saturated it until requests stalled and
+ * the book sat on "Loading" forever. So one runs at a time; a request that
+ * arrives mid-flight sets a flag and the current run repeats once when it ends.
+ */
+let refreshing = false;
+let refreshAgain = false;
+
 async function refresh() {
+  if (refreshing) {
+    refreshAgain = true;
+    return;
+  }
+  refreshing = true;
+  try {
+    await refreshOnce();
+  } finally {
+    refreshing = false;
+    if (refreshAgain) {
+      refreshAgain = false;
+      void refresh();
+    }
+  }
+}
+
+async function refreshOnce() {
   if (!state.venue || !state.nox) {
     render();
     return;
@@ -587,8 +631,10 @@ async function refresh() {
         volumePublished: f.volumePublished,
         pricePublic,
         volumePublic,
-        priceValue: pricePublic ? await tryPublicDecrypt(f.price) : null,
-        volumeValue: volumePublic ? await tryPublicDecrypt(f.qty) : null,
+        // Use whatever is already cached; the actual gateway decryption happens
+        // in enrich(), off the critical path.
+        priceValue: pricePublic ? (publicValues.get(f.price) ?? null) : null,
+        volumeValue: volumePublic ? (publicValues.get(f.qty) ?? null) : null,
       });
     } catch {
       /* skip */
@@ -598,10 +644,42 @@ async function refresh() {
   orders = nextOrders;
   fills = nextFills;
 
+  // Render the structure NOW, from fast eth_calls only. Decryption goes through
+  // the gateway and can be slow or stall; awaiting it here once left the book
+  // stuck on "Loading" whenever the gateway was sluggish. The book and ticker
+  // are ready to show "withheld"/"resolving" placeholders, so they render
+  // immediately and fill in as values arrive.
+  await ensureInstrumentSymbol();
+  render();
+
+  // Everything below touches the gateway — fire it without blocking the paint.
+  void enrich();
+}
+
+/** Off-critical-path: decrypt what we can, then re-render. */
+async function enrich() {
   await refreshCompliance();
   await refreshPosition();
   await refreshWrapper();
-  render();
+
+  let changed = false;
+  for (const f of fills) {
+    if (f.pricePublic && f.priceValue === null) {
+      const v = await tryPublicDecrypt(f.price);
+      if (v !== null) {
+        f.priceValue = v;
+        changed = true;
+      }
+    }
+    if (f.volumePublic && f.volumeValue === null) {
+      const v = await tryPublicDecrypt(f.qty);
+      if (v !== null) {
+        f.volumeValue = v;
+        changed = true;
+      }
+    }
+  }
+  if (changed) render();
 }
 
 /** Your own decrypted position — plaintext, accent-framed, not market data. */
@@ -728,10 +806,13 @@ async function refreshWrapper() {
 // ---------------------------------------------------------------------------
 
 function render() {
-  renderBook();
-  renderMyOrders();
-  renderTape();
-  if (state.role === "auditor") void renderAuditor();
+  renderTicker();
+  if (state.role === "auditor") {
+    void renderAuditor();
+  } else {
+    renderBook();
+    renderMyOrders();
+  }
 }
 
 function orderStatusChip(o: OrderRow, expired: boolean): string {
@@ -837,58 +918,111 @@ function renderMyOrders() {
     .join("");
 }
 
-/** The tape: compact prints, always docked, newest first. */
-function renderTape() {
+/**
+ * Colour for a print, derived from its parameters so the ticker is not
+ * monochrome.
+ *
+ *  - a stable hue per INSTRUMENT (from the symbol, so several instruments would
+ *    each get their own colour on a real book)
+ *  - a stronger left rule and label for LIS versus standard BUCKET
+ *  - the VOLUME magnitude drives how saturated the printed number is
+ *
+ * Right now every live fill is one instrument at one size, so the variety shows
+ * as the bucket/state colours; the magnitude scale engages the moment sizes
+ * differ.
+ */
+function hueForToken(symbol: string): number {
+  let h = 0;
+  for (let i = 0; i < symbol.length; i++) h = (h * 31 + symbol.charCodeAt(i)) % 360;
+  return h;
+}
+
+function volMagnitudeClass(v: bigint): string {
+  const n = Number(v);
+  return n >= 2000 ? "v-hi" : n >= 500 ? "v-mid" : "v-lo";
+}
+
+let tickerSignature = "";
+
+/**
+ * The tape as a news-style ticker. Content is duplicated so the marquee loops
+ * seamlessly, and the marquee is only rebuilt when the set of prints actually
+ * changes — otherwise the once-a-second countdown tick would restart the scroll
+ * every second.
+ */
+function renderTicker() {
   const host = el("tape");
   if (!host) return;
 
   if (!fills.length) {
-    host.innerHTML = `<p class="empty">No prints yet.</p>`;
+    if (tickerSignature !== "empty") {
+      host.innerHTML = `<span class="ticker-empty">No prints yet — the book is empty, not hidden.</span>`;
+      host.style.animation = "none";
+      tickerSignature = "empty";
+    }
     return;
   }
 
   const now = BigInt(Math.floor(Date.now() / 1000));
+  const token = state.instrumentSymbol || "ACME30";
+  const hue = hueForToken(token);
 
-  host.innerHTML = [...fills]
-    .reverse()
-    .map((f) => {
-      const lis = f.bucket === Bucket.LargeInScale;
-      const passed = f.reported && now >= f.deferredUntil;
-      const left = f.reported ? Number(f.deferredUntil - now) : 0;
+  const items = [...fills].reverse().map((f) => {
+    const lis = f.bucket === Bucket.LargeInScale;
+    const passed = f.reported && now >= f.deferredUntil;
 
-      const price = f.pricePublic
-        ? f.priceValue !== null
-          ? `<div class="print-val pub">${fmt(f.priceValue)}</div>`
-          : `<div class="print-val held">resolving…</div>`
-        : `<div class="print-val held">withheld</div>`;
+    const priceCell = f.pricePublic
+      ? f.priceValue !== null
+        ? `<span class="tick-price">${fmt(f.priceValue)}</span>`
+        : `<span class="tick-held">resolving…</span>`
+      : `<span class="tick-held">withheld</span>`;
 
-      let volume: string;
-      if (f.volumePublic) {
-        volume =
-          f.volumeValue !== null
-            ? `<div class="print-val pub">${fmt(f.volumeValue)}</div>`
-            : `<div class="print-val held">resolving…</div>`;
-      } else if (!f.reported) {
-        volume = `<div class="print-val held">unreported</div>`;
-      } else if (passed) {
-        volume = `<div class="print-val count">ready</div>`;
-      } else {
-        volume = `<div class="print-val count" data-countdown="${f.deferredUntil}">${mmss(left)}</div>`;
-      }
+    let volCell: string;
+    if (f.volumePublic) {
+      volCell =
+        f.volumeValue !== null
+          ? `<span class="tick-vol ${volMagnitudeClass(f.volumeValue)}">${fmt(f.volumeValue)}</span>`
+          : `<span class="tick-held">resolving…</span>`;
+    } else if (!f.reported) {
+      volCell = `<span class="tick-held">unreported</span>`;
+    } else if (passed) {
+      volCell = `<span class="tick-ready">ready</span>`;
+    } else {
+      volCell = `<span class="tick-count" data-countdown="${f.deferredUntil}">${mmss(
+        Number(f.deferredUntil - now),
+      )}</span>`;
+    }
 
-      return `
-      <div class="print ${f.volumePublic ? "" : "gap-open"}">
-        <div class="print-head">
-          <span>fill #${f.id}</span>
-          <span class="pill ${lis ? "warn" : "muted"}">${lis ? "LIS" : "standard"}</span>
-        </div>
-        <div class="print-legs">
-          <div class="print-leg"><label>price</label>${price}</div>
-          <div class="print-leg"><label>volume</label>${volume}</div>
-        </div>
-      </div>`;
-    })
-    .join("");
+    // Hue via inline custom property; the class only picks bucket saturation.
+    const sat = lis ? 62 : 30;
+    const light = 42;
+    const style = `--tick-hue: hsl(${hue} ${sat}% ${light}%)`;
+
+    return `
+    <span class="tick" style="${style}">
+      <span class="tick-id">#${f.id}</span>
+      <span class="tick-token">${escapeHtml(token)}</span>
+      <span class="pill ${lis ? "warn" : "muted"}">${lis ? "LIS" : "std"}</span>
+      <span class="tick-leg"><span class="k">px</span>${priceCell}</span>
+      <span class="tick-leg"><span class="k">vol</span>${volCell}</span>
+    </span>`;
+  });
+
+  // Rebuild only when the structure changes (ids, public flags, values). The
+  // countdown text is patched in place by the interval, not re-rendered here.
+  const sig = fills
+    .map((f) => `${f.id}:${f.pricePublic ? f.priceValue : "-"}:${f.volumePublic ? f.volumeValue : f.reported ? "r" : "u"}`)
+    .join("|");
+  if (sig === tickerSignature) return;
+  tickerSignature = sig;
+
+  const run = items.join("");
+  host.innerHTML = run + run; // two copies for a seamless -50% loop
+
+  // Constant scroll speed regardless of how many prints there are.
+  const duration = Math.max(18, fills.length * 6);
+  host.style.setProperty("--marquee-duration", `${duration}s`);
+  host.style.animation = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,10 +1378,67 @@ document.addEventListener("click", (e) => {
     );
     return;
   }
-
-  const roleBtn = t.closest?.(".role") as HTMLButtonElement | null;
-  if (roleBtn?.dataset.role) setRole(roleBtn.dataset.role as Role);
 });
+
+// ---------------------------------------------------------------------------
+// resizable columns
+// ---------------------------------------------------------------------------
+
+/**
+ * The workspace columns are widened by dragging the handles between them. Widths
+ * live in CSS custom properties on the root and persist across reloads, so a
+ * layout someone sets up for filming stays put.
+ */
+const COLUMN_LIMITS: Record<string, [number, number]> = {
+  w0: [240, 620], // order book column
+  w2: [260, 620], // wrapper / orders column
+  wa: [300, 720], // auditor side column
+};
+
+function applyColumnWidths() {
+  for (const key of Object.keys(COLUMN_LIMITS)) {
+    const saved = localStorage.getItem(`col:${key}`);
+    if (saved) document.documentElement.style.setProperty(`--${key}`, `${saved}px`);
+  }
+}
+
+function initResizers() {
+  document.querySelectorAll<HTMLElement>(".resizer").forEach((handle) => {
+    const key = handle.dataset.resize!;
+    const [min, max] = COLUMN_LIMITS[key] ?? [240, 640];
+
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add("dragging");
+
+      // w2 / wa are the RIGHT column, so dragging left should widen them — the
+      // delta is inverted relative to the left-hand book column.
+      const rightSide = key === "w2" || key === "wa";
+      const startX = e.clientX;
+      const startW =
+        parseFloat(getComputedStyle(document.documentElement).getPropertyValue(`--${key}`)) ||
+        (key === "wa" ? 420 : key === "w2" ? 360 : 340);
+
+      const onMove = (ev: PointerEvent) => {
+        const delta = (ev.clientX - startX) * (rightSide ? -1 : 1);
+        const w = Math.min(max, Math.max(min, startW + delta));
+        document.documentElement.style.setProperty(`--${key}`, `${w}px`);
+      };
+      const onUp = (ev: PointerEvent) => {
+        handle.releasePointerCapture(ev.pointerId);
+        handle.classList.remove("dragging");
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        const w = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(`--${key}`));
+        if (w) localStorage.setItem(`col:${key}`, String(Math.round(w)));
+      };
+
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // boot
@@ -1298,7 +1489,9 @@ setInterval(() => {
   if (state.venue) void refresh();
 }, 20_000);
 
-setRole("trader");
+applyColumnWidths();
+initResizers();
+setView("trader");
 
 if (!CONFIG.venue) {
   banner("No deployment configured — set VITE_VENUE and VITE_CHAIN_ID.", "info");
