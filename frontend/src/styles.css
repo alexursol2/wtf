@@ -1963,6 +1963,71 @@ footer p {
   color: var(--ink);
 }
 
+/* ------------------------------------------------ pre-signature review -- */
+
+.review-lead {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--pending);
+  background: color-mix(in srgb, var(--pending) 12%, transparent);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.review-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.review-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.review-steps li {
+  margin-bottom: 12px;
+}
+
+.review-step-label {
+  font-weight: 800;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.review-step-detail {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+/* The address the wallet will show. Wrapping matters — it is the one thing
+   worth comparing character by character. */
+.review-step-contract {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.review-foot {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: var(--border-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* ------------------------------------------------------------- responsive -- */
 
 /* Three columns need real width. Below that they become two, then one — the

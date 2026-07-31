@@ -45,10 +45,12 @@ import {
   copyable,
   escapeHtml,
   flashReveal,
+  reviewTransaction,
   setLock,
   statusChip,
   toast,
   wireCopyButtons,
+  type ReviewStep,
 } from "./ui.js";
 
 // ---------------------------------------------------------------------------
@@ -2698,9 +2700,48 @@ async function onEntrySubmit(e: Event) {
     return;
   }
 
-  // Fund first, in the same flow, so there is no separate deposit step.
   const need = requiredFunding(qty);
-  if (need > 0n && !(await ensureFunded(need))) return;
+  const leg = fundingLeg();
+  const have = state.escrow[leg];
+  const needsTopUp = need > 0n && (have === null || have < need);
+
+  // Say what will be signed BEFORE the wallet opens.
+  //
+  // Funding happens inline, so pressing Buy used to raise a wallet dialog for a
+  // DEPOSIT — a different call than the one the button named, reported as "No
+  // changes" because the amount is encrypted and cannot be simulated. From the
+  // user's side that is indistinguishable from the site doing something it
+  // never mentioned.
+  const sym = state.instrument.symbol;
+  const steps: ReviewStep[] = [];
+  if (needsTopUp) {
+    steps.push({
+      label: `Fund escrow — ${fmt(withBuffer(have === null ? need : need - have))} ${leg}`,
+      detail:
+        "Moves value into the venue so the order can settle. A separate transaction: your wallet asks for this FIRST, before the order itself.",
+      contract: CONFIG.venue,
+    });
+  }
+  steps.push({
+    label:
+      entry.side === "buy"
+        ? `Buy ${fmt(qty)} ${sym} at ${unscale(price)}${market ? " (market, 2% collar)" : ""}`
+        : `Sell ${fmt(qty)} ${sym} at ${unscale(price)}${market ? " (market, 2% collar)" : ""}`,
+    detail: market
+      ? "Takes resting liquidity. Settlement uses the RESTING price, and the collar is the worst price you accept — outside it the trade settles to zero rather than filling."
+      : "Crosses if it meets a resting order; anything left over rests on the book as your own order.",
+    contract: CONFIG.venue,
+  });
+
+  const ok = await reviewTransaction({
+    title: entry.side === "buy" ? "Review purchase" : "Review sale",
+    steps,
+    confirmLabel: steps.length > 1 ? `Continue — ${steps.length} confirmations` : "Continue",
+  });
+  if (!ok) return;
+
+  // Fund first, in the same flow, so there is no separate deposit step.
+  if (needsTopUp && !(await ensureFunded(need))) return;
 
   const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
 

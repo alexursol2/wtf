@@ -473,6 +473,21 @@
       </div>
     </div>
 
+    <!-- Shown BEFORE any wallet prompt, so the dialog the wallet opens is the
+         one the user was told to expect. -->
+    <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="reviewTitle">Review</h3>
+        </div>
+        <div id="reviewBody" class="modal-body"></div>
+        <div class="review-actions">
+          <button id="reviewCancel" class="small" type="button">Cancel</button>
+          <button id="reviewConfirm" class="primary" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script type="module" src="/src/main.ts"></script>

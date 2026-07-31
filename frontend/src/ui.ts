@@ -121,6 +121,115 @@ export function toast(
   }, ms);
 }
 
+// ---------------------------------------------------------------------------
+// pre-signature review
+// ---------------------------------------------------------------------------
+
+export interface ReviewStep {
+  /** "Fund escrow", "Buy 400 ACME30" — what this signature actually does. */
+  label: string;
+  /** One line on why it is needed, in the user's terms. */
+  detail: string;
+  /** Contract this step calls, so it can be matched against the wallet. */
+  contract?: string;
+}
+
+/**
+ * Shows what is about to be signed, and waits for a decision.
+ *
+ * This exists because a single click can produce more than one wallet prompt,
+ * and the FIRST one is not the thing the user asked for. Placing an order tops
+ * escrow up first, so pressing "Buy" opened a MetaMask dialog for a deposit —
+ * a different contract call, reported by the wallet as "No changes" because the
+ * amount it moves is encrypted and it cannot simulate it. From the user's side
+ * that is indistinguishable from the site doing something it never mentioned.
+ *
+ * So every step is named up front, in order, with the contract address the
+ * wallet will show. Nothing here can prevent a bad transaction — only the user
+ * can — but it makes the wallet's dialog verifiable instead of surprising.
+ */
+export function reviewTransaction(opts: {
+  title: string;
+  steps: ReviewStep[];
+  /** Shown above the steps when there is something to warn about. */
+  note?: string;
+  confirmLabel?: string;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const host = document.getElementById("reviewModal");
+    const body = document.getElementById("reviewBody");
+    const titleEl = document.getElementById("reviewTitle");
+    const okBtn = document.getElementById("reviewConfirm") as HTMLButtonElement | null;
+    const noBtn = document.getElementById("reviewCancel");
+
+    // No dialog in the DOM should never block a trade.
+    if (!host || !body || !okBtn || !noBtn || !titleEl) {
+      resolve(true);
+      return;
+    }
+
+    titleEl.textContent = opts.title;
+
+    const many = opts.steps.length > 1;
+    body.innerHTML = `
+      ${
+        many
+          ? `<p class="review-lead">This needs <strong>${opts.steps.length} separate wallet
+             confirmations</strong>, in this order. Your wallet will ask once per step.</p>`
+          : ""
+      }
+      ${opts.note ? `<p class="review-note">${escapeHtml(opts.note)}</p>` : ""}
+      <ol class="review-steps">
+        ${opts.steps
+          .map(
+            (s) => `
+          <li>
+            <div class="review-step-label">${escapeHtml(s.label)}</div>
+            <div class="review-step-detail">${escapeHtml(s.detail)}</div>
+            ${
+              s.contract
+                ? `<div class="review-step-contract mono">${escapeHtml(s.contract)}</div>`
+                : ""
+            }
+          </li>`,
+          )
+          .join("")}
+      </ol>
+      <p class="review-foot">
+        Amounts are encrypted before they leave this browser, so your wallet cannot preview them
+        and will say <span class="mono">No changes</span>. That is expected here &mdash; check the
+        contract address instead.
+      </p>`;
+
+    if (opts.confirmLabel) okBtn.textContent = opts.confirmLabel;
+
+    const close = (answer: boolean) => {
+      host.classList.add("hidden");
+      okBtn.removeEventListener("click", onOk);
+      noBtn.removeEventListener("click", onNo);
+      host.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+      resolve(answer);
+    };
+    const onOk = () => close(true);
+    const onNo = () => close(false);
+    const onBackdrop = (e: Event) => {
+      if (e.target === host) close(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close(false);
+    };
+
+    okBtn.addEventListener("click", onOk);
+    noBtn.addEventListener("click", onNo);
+    host.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+
+    host.classList.remove("hidden");
+    okBtn.focus();
+  });
+}
+
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
