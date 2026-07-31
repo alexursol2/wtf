@@ -172,8 +172,34 @@ const entry = {
  */
 const COLLAR_BPS = 200n; // 2%
 
-const collarBuy = (reference: bigint) => reference + (reference * COLLAR_BPS) / 10_000n;
-const collarSell = (reference: bigint) => reference - (reference * COLLAR_BPS) / 10_000n;
+/**
+ * Collar limits are rounded to whole cents.
+ *
+ * 2% of an odd reference lands on a fraction the screen cannot show: at a
+ * reference of 24.80 the raw buy collar is 25.296, which displays as 25.29 —
+ * a number that is not what the trade carries and cannot be typed back in.
+ * Rounding the ENCRYPTED value, not just its display, keeps the two identical.
+ *
+ * Rounding direction is not symmetric: a buy limit rounds UP and a sell limit
+ * rounds DOWN, so the band can only ever widen. Rounding the other way would
+ * shave the collar and reject quotes that were inside it.
+ */
+const CENT = () => priceScale() / 100n;
+
+/** True once the user types a price, so nothing re-seeds over their number. */
+let priceEdited = false;
+
+const collarBuy = (reference: bigint) => {
+  const c = CENT();
+  const raw = reference + (reference * COLLAR_BPS) / 10_000n;
+  return ((raw + c - 1n) / c) * c;
+};
+
+const collarSell = (reference: bigint) => {
+  const c = CENT();
+  const raw = reference - (reference * COLLAR_BPS) / 10_000n;
+  return (raw / c) * c;
+};
 
 // ---------------------------------------------------------------------------
 // encrypted values
@@ -2219,9 +2245,20 @@ function renderMark() {
   const bondMark = el("bondMark");
   if (bondMark) bondMark.textContent = `${kind.toLowerCase()} ${money(price)}`;
 
-  // Seed the limit field so it is never empty and never wrong for the pair.
+  // Seed the limit field with a real, editable number rather than a hint.
+  //
+  // It used to carry only a placeholder, so the field read as empty and the
+  // only visible price was the collar note — which differs between buy and
+  // sell, so flipping the side appeared to change the price by itself. A
+  // concrete starting value that survives the flip removes both problems.
+  //
+  // Anything the user has typed is left alone: `priceEdited` is set by the
+  // input handler, and nothing here overwrites their number.
   const priceInput = el("entryPrice") as HTMLInputElement | null;
-  if (priceInput) priceInput.placeholder = unscale(price);
+  if (priceInput) {
+    priceInput.placeholder = unscale(price);
+    if (!priceEdited) priceInput.value = unscale(price);
+  }
 }
 
 function renderAllocSource() {
@@ -3073,6 +3110,44 @@ async function onWrap(e: Event) {
     return;
   }
 
+  // Work out whether the approval is actually needed, so the review promises
+  // the right number of prompts rather than always warning about two.
+  const sym = state.instrument.symbol;
+  let needsApproval = true;
+  try {
+    const w = new Contract(wrapperAddress, WRAPPER_ABI, state.signer!);
+    const t = new Contract(await w.underlying(), ERC20_ABI, state.signer!);
+    const decimals: bigint = await t.decimals();
+    const want = parseUnits(raw, Number(decimals));
+    const allowance: bigint = await t.allowance(state.account, wrapperAddress);
+    needsApproval = allowance < want;
+  } catch {
+    /* leave it as "assume needed" — over-warning is the safe direction */
+  }
+
+  const steps: ReviewStep[] = [];
+  if (needsApproval) {
+    steps.push({
+      label: `Approve ${raw} ${sym}`,
+      detail:
+        "ERC-20 has no way to permit and move tokens in one call, so the permission is its own transaction. Granted for exactly this amount, not unlimited — and reused next time, so this step only appears when the allowance runs out.",
+      contract: state.instrument.token,
+    });
+  }
+  steps.push({
+    label: `Hide ${raw} ${sym}`,
+    detail:
+      "The wrapper takes custody of the tokens and issues you an encrypted balance in return. This amount is public — what stays private is the balance afterwards.",
+    contract: wrapperAddress,
+  });
+
+  const ok = await reviewTransaction({
+    title: `Hide ${sym}`,
+    steps,
+    confirmLabel: steps.length > 1 ? "Continue — 2 confirmations" : "Continue",
+  });
+  if (!ok) return;
+
   await asyncAction(
     {
       button: document.querySelector<HTMLButtonElement>(`[data-async="wrap"]`),
@@ -3244,6 +3319,8 @@ $("entryForm").addEventListener("submit", (e) => void onEntrySubmit(e));
 
       // Balances and the encrypted wrapper handle are per-instrument, so they
       // are stale the moment the pair changes.
+      // A different asset has a different price, so the seeded number must follow.
+      priceEdited = false;
       state.wallet = { cash: null, shares: null };
       ensureInstrumentSymbol();
       renderEntry();
@@ -3295,6 +3372,7 @@ el("entryNotional")?.addEventListener("input", syncFromNotional);
 
 // --- execution safety guard: re-evaluate on anything that moves the maths
 el("entryPrice")?.addEventListener("input", () => {
+  priceEdited = true;
   // Changing the price changes what a percentage of the wallet BUYS, so an
   // allocation already chosen has to be re-derived. Without this, moving the
   // slider to 50% and then editing the price left a quantity that was 50% of

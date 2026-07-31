@@ -198,6 +198,53 @@ signs decryption authorizations off-chain.
 
 ---
 
+## 4a. Backing escrow with the wrapper — designed, not built
+
+`depositShares` still credits a self-declared amount. Wiring it to real custody
+is not a one-line change, and the reason is worth writing down before anyone
+starts.
+
+**`confidentialTransfer` cannot be used as-is.** It moves from `msg.sender`, so
+the venue calling it would move the *venue's* balance. The user pushing first and
+the venue crediting afterwards does not work either: the amount is a ciphertext,
+so the venue cannot verify what actually arrived.
+
+**What it needs is an operator path on the wrapper:**
+
+```solidity
+mapping(address => mapping(address => bool)) public isOperator;
+function setOperator(address op, bool ok) external;
+
+/// Only an operator the holder approved. Returns the amount ACTUALLY moved.
+function operatorTransfer(address from, address to, externalEuint256 encAmount, bytes calldata proof)
+    external returns (euint256 moved);
+```
+
+The return value is the load-bearing part. `Nox.transfer` moves zero when the
+holder is short, so an operator transfer that credited the *requested* amount
+would leave escrow unbacked in exactly the case that matters. Returning
+`Nox.select(success, amount, ZERO)` lets the venue credit precisely what moved:
+
+```solidity
+euint256 moved = wrapper.operatorTransfer(msg.sender, address(this), encAmount, proof);
+escrowShares[msg.sender] = Nox.add(escrowShares[msg.sender], moved);
+```
+
+**The part that makes it a real project rather than a patch:** escrow is
+currently one balance per address, but there are three instruments with three
+wrappers. Backed escrow has to become `escrowShares[account][instrument]`, which
+touches `postAsk`, `postBid`, `fill`, `hit`, `cancel` and `withdrawShares` — and
+means redeploying **both** the wrapper and the venue, re-registering the wrappers
+as holders of record, and re-seeding.
+
+Cash has the same gap and the same fix, against the cash wrapper.
+
+Budget it as: wrapper change + venue change + tests + two redeploys + re-seed.
+Do not start it without room to finish — a half-wired escrow settles trades to
+zero silently, which is the worst failure this codebase has.
+
+---
+
 ## 5. Known limitations (deliberate, documented)
 
 - **Escrow is not backed by the wrapper.** `depositShares` credits a
