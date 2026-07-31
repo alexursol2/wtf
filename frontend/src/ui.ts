@@ -94,31 +94,60 @@ export function wireCopyButtons(root: ParentNode = document) {
 // toasts
 // ---------------------------------------------------------------------------
 
+export interface ToastHandle {
+  /** Replaces the contents in place, restarting the dismissal timer. */
+  update(kind: "ok" | "error" | "info", title: string, detail?: string): void;
+}
+
+const PHASE = { ok: "confirmed", error: "failed", info: "submitted" } as const;
+
+/**
+ * One notice, updated in place.
+ *
+ * A write used to post a toast when it was submitted and a second when it
+ * confirmed, so a single click stacked two cards — and with funding inline,
+ * four. They said the same thing at different times, which is a status, not two
+ * events. `update` moves the existing card through its lifecycle instead.
+ */
 export function toast(
   kind: "ok" | "error" | "info",
   title: string,
   detail?: string,
   ms = kind === "error" ? 9000 : 5200,
-) {
+): ToastHandle {
   const host = document.getElementById("toasts");
-  if (!host) return;
+  const noop: ToastHandle = { update: () => {} };
+  if (!host) return noop;
 
   const el = document.createElement("div");
   el.className = "toast";
-  const phase = kind === "ok" ? "confirmed" : kind === "error" ? "failed" : "submitted";
-  el.innerHTML = `
-    ${statusChip(phase as any, "")}
-    <div class="body">
-      <div class="title">${escapeHtml(title)}</div>
-      ${detail ? `<div class="detail">${escapeHtml(detail)}</div>` : ""}
-    </div>`;
   host.appendChild(el);
 
-  setTimeout(() => {
-    el.style.transition = "opacity .3s";
-    el.style.opacity = "0";
-    setTimeout(() => el.remove(), 320);
-  }, ms);
+  let timer: ReturnType<typeof setTimeout>;
+  const paint = (k: "ok" | "error" | "info", t: string, d?: string, life = ms) => {
+    el.innerHTML = `
+      ${statusChip(PHASE[k] as any, "")}
+      <div class="body">
+        <div class="title">${escapeHtml(t)}</div>
+        ${d ? `<div class="detail">${escapeHtml(d)}</div>` : ""}
+      </div>`;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      el.style.transition = "opacity .3s";
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), 320);
+    }, life);
+  };
+
+  paint(kind, title, detail);
+
+  return {
+    update(k, t, d) {
+      el.style.transition = "";
+      el.style.opacity = "1";
+      paint(k, t, d, k === "error" ? 9000 : 5200);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -281,20 +310,21 @@ export async function asyncAction<T>(
   };
 
   setPhase("submitted", "Submitting…");
-  toast("info", `${label} submitted`, "Waiting for inclusion.");
+  // One notice for the whole action, moved through its phases.
+  const notice = toast("info", `${label} submitted`, "Waiting for inclusion.");
 
   try {
     const result = await fn();
 
     if (opts.async) {
       setPhase("computing", "Computing…");
-      toast(
+      notice.update(
         "ok",
         `${label} confirmed on-chain`,
         "The encrypted result is still resolving in the TEE — values may lag by a few seconds.",
       );
     } else {
-      toast("ok", `${label} confirmed`);
+      notice.update("ok", `${label} confirmed`);
     }
 
     setPhase("confirmed", "Done");
@@ -315,7 +345,7 @@ export async function asyncAction<T>(
       err?.message ??
       "transaction failed";
     setPhase("failed", "Failed");
-    toast("error", `${label} failed`, String(reason).slice(0, 220));
+    notice.update("error", `${label} failed`, String(reason).slice(0, 220));
     setTimeout(() => {
       if (button) {
         button.disabled = false;

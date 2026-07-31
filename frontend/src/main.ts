@@ -1515,10 +1515,18 @@ function renderTicker() {
 
   renderUnhideControl();
 
-  // Task: the tape carries only prints with an open parameter, minus anything
-  // the viewer has permanently hidden.
+  // Prints with an open parameter, minus anything the viewer has hidden.
+  //
+  // A trader sees the pair they are trading — a tape mixing instruments is
+  // noise next to a book showing one. The REGULATOR sees everything: supervision
+  // is of the venue, not of whichever pair happens to be selected, and the
+  // instrument the auditor is "on" is meaningless when they trade nothing.
+  const wholeVenue = state.role === "auditor";
   const visible = fills.filter(
-    (f) => f.pricePublic && !hiddenFills.has(f.id) && f.instrument === instrumentIndex(),
+    (f) =>
+      f.pricePublic &&
+      !hiddenFills.has(f.id) &&
+      (wholeVenue || f.instrument === instrumentIndex()),
   );
 
   if (!visible.length) {
@@ -1535,10 +1543,13 @@ function renderTicker() {
   }
 
   const now = BigInt(Math.floor(Date.now() / 1000));
-  const token = state.instrumentSymbol || "ACME30";
-  const hue = hueForToken(token);
 
   const items = [...visible].reverse().map((f) => {
+    // Label and colour follow EACH PRINT's own instrument rather than the
+    // selected pair. On the regulator's mixed tape the selected pair means
+    // nothing, and using it would label every trade with the wrong symbol.
+    const token = symbolForIndex(f.instrument);
+    const hue = hueForToken(token);
     const lis = f.bucket === Bucket.LargeInScale;
     const passed = f.reported && now >= f.deferredUntil;
 
@@ -1582,7 +1593,7 @@ function renderTicker() {
   // Rebuild only when the structure changes (visible ids, public flags, values,
   // hidden set). The countdown text is patched in place by the interval.
   const sig =
-    `h${hiddenFills.size}|` +
+    `${state.role}|h${hiddenFills.size}|` +
     visible
       .map((f) => `${f.id}:${f.priceValue}:${f.volumePublic ? f.volumeValue : f.reported ? "r" : "u"}`)
       .join("|");
