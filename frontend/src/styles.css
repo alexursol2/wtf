@@ -35,8 +35,8 @@
      soft without washing out a real error. */
   --buy: #8ecfa8;
   --buy-ink: #0d2e1a;
-  --sell: #e8a3a3;
-  --sell-ink: #3a1414;
+  --sell: #d98585;
+  --sell-ink: #33100f;
 
   --r-lg: 18px;
   --r-md: 12px;
@@ -923,20 +923,28 @@ select:focus {
   border-top: var(--border);
 }
 
+/* Reduced to a thin colour rule. The "THE TAPE ?" caption it used to hold was
+   permanent furniture explaining something the tape itself demonstrates, and it
+   ate width on every screen. It keeps its box only while there is something to
+   put in it — the unhide control. */
 .ticker-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 14px;
+  padding: 0;
+  width: 8px;
   border-right: var(--border);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: 10.5px;
   font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   white-space: nowrap;
   flex: none;
+}
+
+.ticker-label:has(.tape-unhide:not(.hidden)) {
+  width: auto;
+  padding: 0 10px;
 }
 
 .ticker-label .help {
@@ -967,9 +975,11 @@ select:focus {
   animation: marquee var(--marquee-duration, 40s) linear infinite;
 }
 
-.ticker:hover .ticker-run {
-  animation-play-state: paused;
-}
+/* The tape does NOT pause on hover. It runs along the bottom of every screen, so
+   the pointer crosses it constantly on the way to something else, and each
+   crossing froze the tape for no reason the user had asked for. Hiding a print
+   is still possible — the per-tick control appears on hover without stopping
+   the scroll. */
 
 @keyframes marquee {
   from {

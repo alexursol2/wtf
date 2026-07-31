@@ -155,16 +155,6 @@
             <span>Order book</span>
             <span id="bookCount" class="tag"></span>
           </button>
-          <div id="bookSort" class="sortbar hidden" role="group" aria-label="Sort the book">
-            <span class="sortbar-label">show</span>
-            <button class="seg on" data-bookfilter="all" type="button">all</button>
-            <button class="seg" data-bookfilter="mine" type="button">mine</button>
-            <button class="seg" data-bookfilter="others" type="button">others</button>
-            <span class="sortbar-sep"></span>
-            <span class="sortbar-label">by date</span>
-            <button class="seg on" data-bookorder="new" type="button">newest</button>
-            <button class="seg" data-bookorder="old" type="button">oldest</button>
-          </div>
         </div>
 
         <div id="bookPanel" class="card fill hidden">
@@ -206,8 +196,6 @@
             <button class="seg" data-ordertype="market" type="button">Market order</button>
           </div>
 
-          <p id="entryExplain" class="entry-note"></p>
-          <p id="liquidityNote" class="micro"></p>
 
           <form id="entryForm" class="form">
             <!-- The target order is chosen automatically (see pickTarget). It is
@@ -264,26 +252,26 @@
               </button>
             </div>
 
-            <div class="field">
+            <!-- Price and visibility sit on one row, so their labels align and
+                 neither field is taller than the other. -->
+            <div class="field" id="priceField">
               <label for="entryPrice">
-                <span id="priceLabel">Limit price</span>
+                <span id="priceLabel">Target price</span>
                 <span id="priceHint" class="mono"></span>
               </label>
               <input id="entryPrice" type="number" min="1" step="1" placeholder="987500" required />
-              <p id="priceNote" class="micro hidden">Executes against best available dark liquidity.</p>
             </div>
 
             <div class="field" id="bucketField">
               <label for="entryBucket">
                 Visibility delay
-                <span class="help mini" tabindex="0" data-tip="How long the SIZE of this trade stays off the public tape. The price always prints at settlement. The regulator sees the true size immediately in every case — this delays public disclosure, never supervisory disclosure. Because the contract cannot read an encrypted quantity, the waiver claim is a declaration it cannot verify; the auditor checks it against the real size.">?</span>
+                <span class="help mini" tabindex="0" data-tip="How long the SIZE of this trade stays off the public tape. The price always prints at settlement, and the regulator sees the true size immediately in every case — this delays public disclosure, never supervisory disclosure. Because the contract cannot read an encrypted quantity, a waiver claim is a declaration it cannot verify; the auditor checks it against the real size.">?</span>
               </label>
               <select id="entryBucket">
                 <option value="immediate">Immediate — size public on report</option>
                 <option value="lis" selected>1.5 min — large-in-scale waiver</option>
                 <option value="never">Never — do not publish the size</option>
               </select>
-              <p id="bucketNote" class="micro"></p>
             </div>
 
             <p id="fundingNote" class="micro"></p>
@@ -433,12 +421,6 @@
     <!-- ================= THE TAPE — ticker along the bottom ================= -->
     <div class="ticker" id="ticker">
       <div class="ticker-label">
-        <span>THE TAPE</span>
-        <span
-          class="help mini"
-          tabindex="0"
-          data-tip="Only prints with an open parameter show here. Price prints at settlement, volume on the deferral (LIS ~90s here, compressed for demo — the real regime defers to end of the following quarter). Colour tracks bucket, instrument and volume."
-        >?</span>
         <button id="tapeUnhide" class="tape-unhide hidden" type="button" title="Restore prints you have hidden"></button>
       </div>
       <div class="ticker-track" id="tapeTrack">

@@ -150,3 +150,16 @@ export const SEEDED_ORDER_INSTRUMENT: Record<number, string> = {
   9: "TSLA.rwa",
   10: "TSLA.rwa",
 };
+
+/**
+ * Instrument of each settled FILL.
+ *
+ * A separate map because fill ids are their own sequence — `fills.length` at the
+ * time of settlement — and have nothing to do with the order id they came from.
+ * Indexing fills into the order map was a real bug: fill #6 is a TSLA trade, but
+ * order #6 is an AAPL offer, so a shared map put the Tesla print on Apple's tape.
+ */
+export const SEEDED_FILL_INSTRUMENT: Record<number, string> = {
+  5: "AAPL.rwa",
+  6: "TSLA.rwa",
+};

@@ -39,6 +39,7 @@ import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } fro
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
 import {
   INSTRUMENTS,
+  SEEDED_FILL_INSTRUMENT,
   SEEDED_ORDER_INSTRUMENT,
   countryName,
   pairLabel,
@@ -883,6 +884,18 @@ function matchesInstrument(id: number): boolean {
   return tag === state.instrument.symbol;
 }
 
+/**
+ * Same question for a FILL, which needs its own map: fill ids are a separate
+ * sequence from order ids, so the two must never share a lookup.
+ */
+function fillInstrument(id: number): string {
+  return SEEDED_FILL_INSTRUMENT[id] ?? INSTRUMENTS[0].symbol;
+}
+
+function fillMatchesInstrument(id: number): boolean {
+  return fillInstrument(id) === state.instrument.symbol;
+}
+
 const POSTED_KEY = "orders:posted";
 const postedQty = new Map<number, bigint>(
   (() => {
@@ -902,19 +915,21 @@ function rememberPosted(id: number, qty: bigint) {
   );
 }
 
-/** Order-book view controls (task: sort/filter the book). */
-let bookFilter: "all" | "mine" | "others" = "all";
-let bookOrder: "new" | "old" = "new";
-
-/** The book collapses behind a button; once the user toggles it, we stop
- *  overriding their choice on connect/disconnect. */
+/**
+ * The book collapses behind a button; once the user toggles it, we stop
+ * overriding their choice on connect/disconnect.
+ *
+ * The filter and sort controls that used to sit beside it are gone. The book is
+ * already scoped to the selected instrument and there are rarely more than a
+ * handful of rows, so "all / mine / others" and "newest / oldest" were three
+ * rows of chrome above three rows of data.
+ */
 let bookOpen = true;
 let bookUserToggled = false;
 
 function setBookOpen(open: boolean) {
   bookOpen = open;
   el("bookPanel")?.classList.toggle("hidden", !open);
-  el("bookSort")?.classList.toggle("hidden", !open);
   const btn = el("bookToggle");
   if (btn) btn.setAttribute("aria-expanded", String(open));
 }
@@ -1333,31 +1348,16 @@ function renderBook() {
       ? `${state.instrument.symbol} · last ${unscale(last.price)}`
       : `${state.instrument.symbol} · no prints yet`;
 
-  const acct = state.account.toLowerCase();
-  const filtered = live.filter((o) => {
-    if (bookFilter === "all" || !acct) return true;
-    const mine = o.maker.toLowerCase() === acct;
-    return bookFilter === "mine" ? mine : !mine;
-  });
-
-  if (!filtered.length) {
-    const why =
-      !live.length
-        ? "No orders yet. The book is empty — not hidden."
-        : bookFilter === "mine"
-          ? "None of the open orders are yours."
-          : bookFilter === "others"
-            ? "Every open order is yours."
-            : "No orders yet. The book is empty — not hidden.";
-    host.innerHTML = `<p class="empty">${why}</p>`;
+  if (!live.length) {
+    host.innerHTML = `<p class="empty">No ${escapeHtml(state.instrument.symbol)} orders yet. The book is empty — not hidden.</p>`;
     return;
   }
 
   const now = BigInt(Math.floor(Date.now() / 1000));
 
-  // Orders carry no timestamp, so "date" order is id order — ids are assigned
-  // sequentially at post time, so newest id == most recent.
-  const sorted = [...filtered].sort((a, b) => (bookOrder === "new" ? b.id - a.id : a.id - b.id));
+  // Orders carry no timestamp, so id order IS date order — ids are assigned
+  // sequentially at post time. Newest first.
+  const sorted = [...live].sort((a, b) => b.id - a.id);
 
   host.innerHTML = sorted
     .map((o) => {
@@ -1525,7 +1525,7 @@ function renderTicker() {
   // Task: the tape carries only prints with an open parameter, minus anything
   // the viewer has permanently hidden.
   const visible = fills.filter(
-    (f) => f.pricePublic && !hiddenFills.has(f.id) && matchesInstrument(f.id),
+    (f) => f.pricePublic && !hiddenFills.has(f.id) && fillMatchesInstrument(f.id),
   );
 
   if (!visible.length) {
@@ -1693,7 +1693,7 @@ function renderExecuted(isAuditor: boolean) {
     .map((f) => {
       const lis = f.bucket === Bucket.LargeInScale;
       const symbol =
-        orderInstrument.get(f.id) ?? SEEDED_ORDER_INSTRUMENT[f.id] ?? INSTRUMENTS[0].symbol;
+        fillInstrument(f.id);
 
       const price =
         f.pricePublic && f.priceValue !== null
@@ -2092,8 +2092,7 @@ function lastPrint(): { price: bigint; fillId: number } | null {
   for (let i = fills.length - 1; i >= 0; i--) {
     const f = fills[i];
     if (!f.pricePublic || f.priceValue === null) continue;
-    // Fills inherit their order's instrument tag where we have one.
-    if (!matchesInstrument(f.id)) continue;
+    if (!fillMatchesInstrument(f.id)) continue;
     return { price: f.priceValue, fillId: f.id };
   }
   return null;
@@ -2367,23 +2366,17 @@ function renderEntry() {
     .querySelectorAll<HTMLElement>("[data-ordertype]")
     .forEach((n) => n.classList.toggle("on", n.dataset.ordertype === entry.type));
 
-  // The visibility choice belongs to whoever creates the trade record. On a buy
-  // that is you (fill declares the bucket); on a sell the taker declares it, so
-  // it is not yours to set.
-  el("bucketField")?.classList.toggle("hidden", !buy);
 
+  // A market order has no price to state — it takes whatever the book gives —
+  // so the field is removed rather than shown disabled and empty.
   const priceEl = el("entryPrice") as HTMLInputElement | null;
-  const priceLabel = el("priceLabel");
-  const priceNote = el("priceNote");
-  const marketPrice = market;
-
+  el("priceField")?.classList.toggle("hidden", market);
   if (priceEl) {
-    priceEl.disabled = marketPrice;
-    priceEl.required = !marketPrice;
-    if (marketPrice) priceEl.value = "";
+    priceEl.disabled = market;
+    priceEl.required = !market;
   }
-  if (priceLabel) priceLabel.textContent = buy ? "Limit bid" : "Limit price";
-  priceNote?.classList.toggle("hidden", !marketPrice);
+  const priceLabel = el("priceLabel");
+  if (priceLabel) priceLabel.textContent = "Target price";
 
   const submit = el("entrySubmit") as HTMLButtonElement | null;
   if (submit) {
@@ -2392,50 +2385,36 @@ function renderEntry() {
         ? "Buy at market"
         : "Buy — limit"
       : market
-        ? "Market sell unavailable"
+        ? "Sell at market"
         : "Post sell offer";
     submit.classList.toggle("submit-buy", buy);
     submit.classList.toggle("submit-sell", !buy);
-    // A market sell has no resting bids to lift. Refuse it in the UI rather
-    // than submit something that cannot mean anything on-chain.
-    submit.disabled = !buy && market;
+    submit.disabled = false;
   }
 
-  const explain = el("entryExplain");
-  if (explain) {
-    explain.innerHTML = buy
-      ? market
-        ? `<strong>Market buy.</strong> Executes against best available dark liquidity: your bid is
-           set high enough to cross whatever the ask turns out to be. You are still debited
-           <span class="mono">qty × ask ÷ 1e4</span>, never your bid, so bidding high does not
-           overpay.`
-        : `<strong>Limit buy.</strong> Your bid is encrypted and compared to the encrypted ask
-           inside the TEE. If it does not cross, the fill settles for <strong>zero</strong> — no
-           revert, because reverting would tell you where the ask sits.`
-      : market
-        ? `<strong>Market sell is unavailable on this venue.</strong> The book is ask-only (RFQ):
-           there are no resting bids to lift. Post a limit offer and wait to be hit.`
-        : `<strong>Limit sell.</strong> Posts resting liquidity at your price. Size and price are
-           encrypted before they leave this browser; you become the maker and the
-           <em>reporting entity</em> for any fill.`;
+  // The visibility choice applies to BOTH sides now, but the control it gives
+  // you differs. A buyer declares the waiver bucket in `fill`, which sets the
+  // deferral length. A seller is the REPORTING ENTITY: they cannot change the
+  // length — the taker's declaration fixes that — but they decide whether and
+  // when to report at all, which is the stronger lever.
+  el("bucketField")?.classList.remove("hidden");
+  const bucketSel = el("entryBucket") as HTMLSelectElement | null;
+  if (bucketSel) {
+    const keep = bucketSel.value;
+    bucketSel.innerHTML = buy
+      ? `<option value="immediate">Immediate — size public on report</option>
+         <option value="lis">1.5 min — large-in-scale waiver</option>
+         <option value="never">Never — do not publish the size</option>`
+      : `<option value="immediate">Report on fill — size public promptly</option>
+         <option value="never">Do not report — size never published</option>`;
+    if ([...bucketSel.options].some((o) => o.value === keep)) bucketSel.value = keep;
+    else bucketSel.value = buy ? "lis" : "immediate";
   }
 
   const unit = el("qtyUnit");
   if (unit) unit.textContent = state.instrument.symbol;
   const nUnit = el("notionalUnit");
   if (nUnit) nUnit.textContent = state.instrument.quote;
-
-  const bucketNote = el("bucketNote");
-  if (bucketNote) {
-    const mins = (Number(state.lisDeferral) / 60).toFixed(1).replace(/\.0$/, "");
-    bucketNote.textContent =
-      {
-        immediate: "The size becomes public as soon as the trade is reported.",
-        lis: `Price prints at settlement; the size stays off the public tape for ${mins} min. The regulator sees the real size immediately either way.`,
-        never:
-          "Nothing is reported, so the size never reaches the public tape. The regulator still holds it, and the trade shows in their unreported list — undisclosed, not undetected.",
-      }[visibilityChoice()] ?? "";
-  }
 
   renderTargetOptions();
   renderAllocSource();
@@ -2485,17 +2464,6 @@ function renderTargetOptions() {
   sel.innerHTML = hittable.map((o) => `<option value="${o.id}">#${o.id}</option>`).join("");
   const chosen = pickTarget();
   if (chosen) sel.value = String(chosen.id);
-
-  // The terminal says whether there IS liquidity, without naming the order.
-  const note = el("liquidityNote");
-  if (note) {
-    note.textContent =
-      entry.side === "buy"
-        ? hittable.length
-          ? `${hittable.length} resting offer${hittable.length === 1 ? "" : "s"} in ${state.instrument.symbol}. Sizes and prices are sealed until settlement.`
-          : `No resting offers in ${state.instrument.symbol} right now.`
-        : "";
-  }
 }
 
 /**
@@ -2605,15 +2573,36 @@ async function onEntrySubmit(e: Event) {
   }
 
   // ---- sell: post an ask ----
+  //
+  // A market sell is a MARKETABLE LIMIT here, and the distinction is the venue's
+  // structure rather than a shortcut. The book is one-sided: `postAsk` creates
+  // offers and `fill` lifts them, with no `postBid`, so there are no resting
+  // bids for a seller to hit and nothing can execute the instant it is signed.
+  // What a market sell can honestly mean is "price me to be taken first" — the
+  // offer goes out at the last traded price rather than above it, so it is the
+  // cheapest thing in the book and the next buyer lifts it.
+  let price: bigint;
   if (entry.type === "market") {
-    toast("error", "Market sell unavailable", "This venue is ask-only — there are no resting bids to lift.");
-    return;
-  }
-
-  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-  if (price <= 0n) {
-    toast("error", "Limit price must be positive");
-    return;
+    price = referencePrice();
+    if (price <= 0n) {
+      toast(
+        "error",
+        "No reference price",
+        "Nothing has printed in this instrument yet, so there is no level to price against. Use a limit.",
+      );
+      return;
+    }
+    toast(
+      "info",
+      "Priced at the last print",
+      `Offered at ${unscale(price)} — the book has no resting bids, so this rests until a buyer lifts it.`,
+    );
+  } else {
+    price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+    if (price <= 0n) {
+      toast("error", "Target price must be positive");
+      return;
+    }
   }
 
   // Offers rest until cancelled. See GTC_EXPIRY for why a date is still needed.
@@ -2983,7 +2972,13 @@ el("entryNotional")?.addEventListener("input", syncFromNotional);
 
 // --- execution safety guard: re-evaluate on anything that moves the maths
 el("entryPrice")?.addEventListener("input", () => {
-  syncFromQty();
+  // Changing the price changes what a percentage of the wallet BUYS, so an
+  // allocation already chosen has to be re-derived. Without this, moving the
+  // slider to 50% and then editing the price left a quantity that was 50% of
+  // nothing in particular.
+  const pct = Number((el("allocRange") as HTMLInputElement)?.value ?? 0);
+  if (pct > 0) applyAllocation(pct);
+  else syncFromQty();
   renderSafety();
 });
 el("safetyAdjust")?.addEventListener("click", adjustForBuffer);
@@ -3031,29 +3026,10 @@ el("btnFreeze")?.addEventListener("click", () => void onFreeze());
   });
 }
 
-// --- order book: collapse behind the history button; sort/filter when open
+// --- order book: collapse behind the history button
 el("bookToggle")?.addEventListener("click", () => {
   bookUserToggled = true;
   setBookOpen(el("bookPanel")?.classList.contains("hidden") ?? true);
-});
-
-el("bookSort")?.addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest?.("[data-bookfilter],[data-bookorder]") as
-    | HTMLElement
-    | null;
-  if (!b) return;
-  if (b.dataset.bookfilter) {
-    bookFilter = b.dataset.bookfilter as typeof bookFilter;
-    b.parentElement
-      ?.querySelectorAll("[data-bookfilter]")
-      .forEach((n) => n.classList.toggle("on", n === b));
-  } else if (b.dataset.bookorder) {
-    bookOrder = b.dataset.bookorder as typeof bookOrder;
-    b.parentElement
-      ?.querySelectorAll("[data-bookorder]")
-      .forEach((n) => n.classList.toggle("on", n === b));
-  }
-  renderBook();
 });
 
 // --- tape: restore everything the viewer has hidden

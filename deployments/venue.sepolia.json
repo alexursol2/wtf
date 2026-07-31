@@ -32,5 +32,9 @@
     "9": "TSLA.rwa",
     "10": "TSLA.rwa"
   },
-  "seededAt": "2026-07-31T20:32:09.748Z"
+  "seededAt": "2026-07-31T20:32:09.748Z",
+  "fillInstruments": {
+    "5": "AAPL.rwa",
+    "6": "TSLA.rwa"
+  }
 }
