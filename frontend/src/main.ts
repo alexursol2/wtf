@@ -38,6 +38,7 @@ import {
 import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
 import { INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
+import { clearHandleStorage, persistentHandleStorage } from "./handleStorage.js";
 import { initTooltips } from "./tooltip.js";
 import {
   asyncAction,
@@ -193,6 +194,17 @@ async function getHandleClient(): Promise<HandleClient> {
     const ephemeral = Wallet.createRandom().connect(readOnlyProvider());
     state.handleClient = await createEthersHandleClient(ephemeral as any, handleConfigOverride());
   }
+
+  // Give the client somewhere durable to keep its gateway authorization.
+  //
+  // The SDK already reuses one signature for a full hour, but only through its
+  // `storageService` — and `createHandleClient` never passes one, so it defaults
+  // to an in-memory object that dies with the page. Reaching past the factory is
+  // not elegant; the alternative is rebuilding ApiService, SubgraphService and
+  // the gateway attestation by hand, since the package exports only factories.
+  // `readonly` here is a TypeScript annotation, not a runtime one.
+  (state.handleClient as any).storageService = persistentHandleStorage;
+
   state.handleClientFor = wanted;
   return state.handleClient;
 }
@@ -235,20 +247,81 @@ async function encryptInput(value: bigint, app: string) {
  */
 const decrypted = new Map<string, bigint>();
 
+/**
+ * Decrypts run ONE AT A TIME, and that is about signature prompts, not races.
+ *
+ * The gateway authorization is minted lazily inside `decrypt()`: if no valid one
+ * is stored, it generates an RSA keypair, asks the wallet to sign, and only
+ * writes the result to storage AFTER the gateway answers successfully. Fire
+ * three decrypts concurrently — a position has cash, shares and a wrapped
+ * balance — and all three find an empty store, so all three sign. The stored
+ * authorization the second and third would have reused does not exist yet when
+ * they look.
+ *
+ * Serialising means the first call pays for the signature, stores it, and every
+ * later call inside the hour finds it. That collapses a queue of twenty-odd
+ * MetaMask prompts into one.
+ */
+let decryptChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = decryptChain.then(fn, fn);
+  // Keep the chain alive after a rejection, or one failure stalls every
+  // decrypt that follows it.
+  decryptChain = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Handles whose value is not computed yet, with the time to stop asking until.
+ *
+ * A pending handle fails the same way every time, and the 20-second poll would
+ * otherwise retry it forever. Each retry that reaches a fresh authorization
+ * costs a signature, so backing off is a prompt-reduction measure as much as an
+ * RPC one.
+ */
+const pendingUntil = new Map<string, number>();
+const PENDING_BACKOFF_MS = 30_000;
+
+/** In-flight decrypts, so the same handle asked for twice waits once. */
+const inFlight = new Map<string, Promise<bigint | null>>();
+
 async function tryDecrypt(handle: string): Promise<bigint | null> {
   if (!handle || handle === ZeroHash) return null;
+
   const hit = decrypted.get(handle);
   if (hit !== undefined) return hit;
-  try {
+
+  const until = pendingUntil.get(handle);
+  if (until !== undefined && Date.now() < until) return null;
+
+  const existing = inFlight.get(handle);
+  if (existing) return existing;
+
+  const task = serialize(async () => {
+    // The value may have arrived while this call waited its turn in the chain.
+    const cached = decrypted.get(handle);
+    if (cached !== undefined) return cached;
+
     const client = await getHandleClient();
     const { value } = await client.decrypt(handle as any);
     const v = BigInt(value as bigint);
     decrypted.set(handle, v);
+    pendingUntil.delete(handle);
     return v;
-  } catch (e: any) {
-    if (isTransient(e)) return null;
-    throw e;
-  }
+  })
+    .catch((e: any) => {
+      if (isTransient(e)) {
+        pendingUntil.set(handle, Date.now() + PENDING_BACKOFF_MS);
+        return null;
+      }
+      throw e;
+    })
+    .finally(() => {
+      inFlight.delete(handle);
+    });
+
+  inFlight.set(handle, task);
+  return task;
 }
 
 const publicValues = new Map<string, bigint>();
@@ -390,6 +463,14 @@ async function disconnect() {
   state.handleClient = null;
   state.handleClientFor = "";
   state.compliance = { verified: null, country: 0, countryGateActive: false, countryAllowed: true };
+
+  // The gateway authorization and its RSA key belong to the address that just
+  // left. Decrypted values go with them: they were readable because of a grant
+  // this session held, and the next account has no claim on them.
+  clearHandleStorage();
+  decrypted.clear();
+  pendingUntil.clear();
+  state.escrow = { cash: null, shares: null };
 
   for (const id of ["cashValue", "sharesValue", "bondBalance", "wrappedValue"]) {
     const n = el(id);
