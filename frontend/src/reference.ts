@@ -73,12 +73,10 @@ export function countryName(code: number): string {
  * deployed on Sepolia, sharing the one IdentityRegistry — so an address verified
  * for one is verified for all three, and each can be held, hidden and traded.
  *
- * What they SHARE is the order book, and that is a contract limitation worth
- * naming rather than hiding. `DeferralVenue.Order` carries no instrument field,
- * so the venue cannot tell an ACME30 ask from an AAPL.rwa one; every order rests
- * in the same book. Separating them needs `uint8 instrument` on Order and Fill
- * and a redeploy, which would retire the currently verified venue address and
- * the fills already printed against it. Until then the UI says so plainly.
+ * Each has its own BOOK. `Order` and `Fill` carry a plaintext `uint8 instrument`
+ * whose value is an index into this array — so the order of these entries is
+ * part of the on-chain contract with the seeding scripts, and appending is safe
+ * while reordering is not.
  */
 export interface Instrument {
   /** Symbol as shown on the tape and in the selector. */
@@ -131,35 +129,11 @@ export const INSTRUMENTS: Instrument[] = [
 
 export const pairLabel = (i: Instrument) => `${i.symbol} / ${i.quote}`;
 
-/**
- * Instrument of each on-chain order, for orders this project posted itself.
- *
- * `DeferralVenue.Order` has no instrument field, so the chain cannot answer
- * this. These ids were assigned by scripts/seed-instrument-orders.ts, which
- * knew what it was posting — so the mapping is fact, not inference, and shipping
- * it here means the AAPL and TSLA books look right in ANY browser rather than
- * only the one that placed them.
- *
- * Orders absent from this map fall back to the first instrument, which is
- * correct for ids 0–5: they predate the other two instruments existing.
+/*
+ * The SEEDED_ORDER_INSTRUMENT / SEEDED_FILL_INSTRUMENT maps that used to live
+ * here are gone. They existed only because the venue could not record which
+ * instrument an order was for, so the mapping had to be shipped alongside the
+ * code and could never cover orders placed from anywhere else. The venue now
+ * carries a plaintext instrument field on both Order and Fill, so the chain
+ * answers the question directly.
  */
-export const SEEDED_ORDER_INSTRUMENT: Record<number, string> = {
-  6: "AAPL.rwa",
-  7: "AAPL.rwa",
-  8: "AAPL.rwa",
-  9: "TSLA.rwa",
-  10: "TSLA.rwa",
-};
-
-/**
- * Instrument of each settled FILL.
- *
- * A separate map because fill ids are their own sequence — `fills.length` at the
- * time of settlement — and have nothing to do with the order id they came from.
- * Indexing fills into the order map was a real bug: fill #6 is a TSLA trade, but
- * order #6 is an AAPL offer, so a shared map put the Tesla print on Apple's tape.
- */
-export const SEEDED_FILL_INSTRUMENT: Record<number, string> = {
-  5: "AAPL.rwa",
-  6: "TSLA.rwa",
-};

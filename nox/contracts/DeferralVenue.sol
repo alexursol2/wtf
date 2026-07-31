@@ -49,9 +49,28 @@ contract DeferralVenue {
         LargeInScale
     }
 
+    /// Which way the resting order faces.
+    ///
+    /// An Ask escrows SHARES and waits for cash; a Bid escrows CASH and waits
+    /// for shares. Both rest in the same array, so the book is genuinely
+    /// two-sided rather than a queue of one-way quotes.
+    enum Side {
+        Ask,
+        Bid
+    }
+
     struct Order {
         address maker;
-        euint256 qtyRemaining; // escrowed shares, long-lived handle
+        Side side;
+        /// Instrument this order is for. PLAINTEXT on purpose: which security is
+        /// being quoted is not the secret — the size and the price are. Keeping
+        /// it readable is what lets the venue serve separate books at all, since
+        /// an encrypted tag could never be compared.
+        uint8 instrument;
+        /// Shares still on offer (Ask) or still sought (Bid).
+        euint256 qtyRemaining;
+        /// Cash still escrowed against a Bid. Unused, and zero, for an Ask.
+        euint256 cashRemaining;
         euint256 price; // scaled by PRICE_SCALE
         uint64 expiry;
         OrderState state;
@@ -60,6 +79,7 @@ contract DeferralVenue {
     struct Fill {
         address maker; // the reporting entity
         address taker;
+        uint8 instrument;
         euint256 qty;
         euint256 price; // SNAPSHOT handle, never the live order's
         Bucket bucket;
@@ -110,6 +130,9 @@ contract DeferralVenue {
     event VolumePublished(uint256 indexed fillId);
     event PausedSet(bool value);
     event FillFrozenSet(uint256 indexed fillId, bool value);
+    /// `sharesLeg` distinguishes the two withdrawals; the AMOUNT is never
+    /// emitted, since it is precisely what escrow keeps confidential.
+    event Withdrawn(address indexed account, bool sharesLeg);
 
     modifier onlyAuditor() {
         require(msg.sender == auditor, "not auditor");
@@ -184,6 +207,7 @@ contract DeferralVenue {
     // ------------------------------------------------------------------
 
     function postAsk(
+        uint8 instrument,
         externalEuint256 encQty,
         externalEuint256 encPrice,
         bytes calldata qtyProof,
@@ -208,7 +232,10 @@ contract DeferralVenue {
         orders.push(
             Order({
                 maker: msg.sender,
+                side: Side.Ask,
+                instrument: instrument,
                 qtyRemaining: escrowed,
+                cashRemaining: euint256.wrap(0),
                 price: price,
                 expiry: expiry,
                 state: OrderState.Open
@@ -219,6 +246,70 @@ contract DeferralVenue {
         Nox.addViewer(newMakerShares, msg.sender);
         Nox.allowThis(escrowed);
         Nox.addViewer(escrowed, msg.sender);
+        Nox.allowThis(price);
+        Nox.addViewer(price, msg.sender);
+
+        emit OrderPosted(id, msg.sender, expiry);
+    }
+
+    /**
+     * A resting BID: the maker escrows cash and waits for someone to sell.
+     *
+     * The mirror of postAsk, and the reason this venue now has a real book
+     * rather than a queue of one-way quotes. The cash committed is
+     * `qty * price / PRICE_SCALE`, computed on ciphertext exactly as `fill`
+     * computes what a taker owes, so the two sides cannot disagree about what a
+     * trade is worth.
+     *
+     * `noOverflow` gates the escrow rather than reverting: an overflowing or
+     * underfunded bid escrows zero and can then only ever settle for zero.
+     * Reverting would tell the caller something about their own encrypted
+     * balance that the venue is not supposed to confirm.
+     */
+    function postBid(
+        uint8 instrument,
+        externalEuint256 encQty,
+        externalEuint256 encPrice,
+        bytes calldata qtyProof,
+        bytes calldata priceProof,
+        uint64 expiry
+    ) external returns (uint256 id) {
+        require(!paused, "paused");
+        require(identityRegistry.isVerified(msg.sender), "not verified");
+        require(expiry > block.timestamp, "expiry in past");
+
+        euint256 qty = Nox.fromExternal(encQty, qtyProof);
+        euint256 price = Nox.fromExternal(encPrice, priceProof);
+
+        (ebool noOverflow, euint256 gross) = Nox.safeMul(qty, price);
+        euint256 need = Nox.div(gross, priceScaleEnc);
+        euint256 needGated = Nox.select(noOverflow, need, euint256.wrap(0));
+
+        (, euint256 newMakerCash, euint256 escrowedCash) =
+            Nox.transfer(escrowCash[msg.sender], euint256.wrap(0), needGated);
+
+        escrowCash[msg.sender] = newMakerCash;
+
+        id = orders.length;
+        orders.push(
+            Order({
+                maker: msg.sender,
+                side: Side.Bid,
+                instrument: instrument,
+                qtyRemaining: qty,
+                cashRemaining: escrowedCash,
+                price: price,
+                expiry: expiry,
+                state: OrderState.Open
+            })
+        );
+
+        Nox.allowThis(newMakerCash);
+        Nox.addViewer(newMakerCash, msg.sender);
+        Nox.allowThis(escrowedCash);
+        Nox.addViewer(escrowedCash, msg.sender);
+        Nox.allowThis(qty);
+        Nox.addViewer(qty, msg.sender);
         Nox.allowThis(price);
         Nox.addViewer(price, msg.sender);
 
@@ -239,6 +330,7 @@ contract DeferralVenue {
     ) external {
         require(!paused, "paused");
         Order storage o = orders[id];
+        require(o.side == Side.Ask, "not an ask");
         require(o.state == OrderState.Open, "not fillable");
         require(block.timestamp < o.expiry, "expired");
         require(identityRegistry.isVerified(msg.sender), "not verified");
@@ -294,6 +386,7 @@ contract DeferralVenue {
             Fill({
                 maker: o.maker,
                 taker: msg.sender,
+                instrument: o.instrument,
                 qty: qtyOut,
                 price: snapPrice,
                 bucket: declaredBucket,
@@ -320,6 +413,150 @@ contract DeferralVenue {
         Nox.addViewer(qtyOut, auditor); // regulator sees volume from block 1
 
         emit FillRecorded(fillId, id, msg.sender, declaredBucket);
+    }
+
+    /**
+     * Sell into a resting BID - the mirror of fill(), and branchless the same way.
+     *
+     * Direction is what changes. In fill() the taker pays cash and the ORDER
+     * releases shares; here the taker delivers shares and the ORDER releases
+     * cash. The crossing test flips with it: the maker's bid must reach the
+     * taker's asking price, `o.price >= askPrice`, where fill() asks the
+     * opposite.
+     *
+     * The gating order matters and is deliberate. Shares move FIRST, and its
+     * success flag - which already encodes "the taker actually held this many" -
+     * gates the cash release. Paying first and checking delivery afterwards
+     * would let an empty seller drain a bid's escrow, and no revert could undo
+     * it, because the shortfall is a ciphertext nothing on-chain can read.
+     *
+     * The reporting entity stays the ORDER'S MAKER, exactly as in fill(). Who
+     * quoted the price is what decides the obligation, not who happened to lift
+     * it, so the disclosure duty does not move just because the trade came from
+     * the other side of the book.
+     */
+    function hit(
+        uint256 id,
+        externalEuint256 encAsk,
+        externalEuint256 encQty,
+        bytes calldata askProof,
+        bytes calldata qtyProof,
+        Bucket declaredBucket
+    ) external {
+        require(!paused, "paused");
+        Order storage o = orders[id];
+        require(o.side == Side.Bid, "not a bid");
+        require(o.state == OrderState.Open, "not fillable");
+        require(block.timestamp < o.expiry, "expired");
+        require(identityRegistry.isVerified(msg.sender), "not verified");
+        // Same storage-collision hazard as fill(): with msg.sender == o.maker
+        // both sides of a leg resolve to one slot and the second write wins.
+        require(msg.sender != o.maker, "self fill");
+
+        euint256 askPrice = Nox.fromExternal(encAsk, askProof);
+        euint256 offered = Nox.fromExternal(encQty, qtyProof);
+
+        ebool crosses = Nox.ge(o.price, askPrice);
+        ebool offersLess = Nox.lt(offered, o.qtyRemaining);
+        euint256 fillQty = Nox.select(offersLess, offered, o.qtyRemaining);
+
+        (ebool noOverflow, euint256 gross) = Nox.safeMul(fillQty, o.price);
+        euint256 proceeds = Nox.div(gross, priceScaleEnc);
+
+        euint256 qtyGated = Nox.select(crosses, Nox.select(noOverflow, fillQty, euint256.wrap(0)), euint256.wrap(0));
+        euint256 proceedsGated =
+            Nox.select(crosses, Nox.select(noOverflow, proceeds, euint256.wrap(0)), euint256.wrap(0));
+
+        // Shares leg first. `delivered` IS the taker's funding check.
+        (ebool delivered, euint256 newTakerShares, euint256 newMakerShares) =
+            Nox.transfer(escrowShares[msg.sender], escrowShares[o.maker], qtyGated);
+
+        // Cash leg, out of the order's own escrow, only against real delivery.
+        euint256 cashOut = Nox.select(delivered, proceedsGated, euint256.wrap(0));
+        (, euint256 newOrderCash, euint256 newTakerCash) =
+            Nox.transfer(o.cashRemaining, escrowCash[msg.sender], cashOut);
+
+        // Retire the filled size from what the bid still seeks.
+        euint256 qtyOut = Nox.select(delivered, qtyGated, euint256.wrap(0));
+        (, euint256 newRemaining,) = Nox.transfer(o.qtyRemaining, euint256.wrap(0), qtyOut);
+
+        escrowShares[msg.sender] = newTakerShares;
+        escrowShares[o.maker] = newMakerShares;
+        escrowCash[msg.sender] = newTakerCash;
+        o.cashRemaining = newOrderCash;
+        o.qtyRemaining = newRemaining;
+        o.state = OrderState.PendingResolution;
+
+        euint256 snapPrice = Nox.add(o.price, euint256.wrap(0));
+
+        uint256 fillId = fills.length;
+        fills.push(
+            Fill({
+                maker: o.maker,
+                taker: msg.sender,
+                instrument: o.instrument,
+                qty: qtyOut,
+                price: snapPrice,
+                bucket: declaredBucket,
+                volumeDeferredUntil: 0,
+                reported: false,
+                volumePublished: false
+            })
+        );
+
+        // ---- ACL. Every handle above is NEW. Miss one and it goes dead. ----
+        Nox.allowThis(newTakerShares);
+        Nox.allowThis(newMakerShares);
+        Nox.allowThis(newTakerCash);
+        Nox.allowThis(newOrderCash);
+        Nox.allowThis(newRemaining);
+        Nox.allowThis(qtyOut);
+        Nox.allowThis(snapPrice);
+
+        Nox.addViewer(newTakerShares, msg.sender);
+        Nox.addViewer(newMakerShares, o.maker);
+        Nox.addViewer(newTakerCash, msg.sender);
+        Nox.addViewer(newOrderCash, o.maker);
+        Nox.addViewer(newRemaining, o.maker);
+        Nox.addViewer(qtyOut, msg.sender);
+        Nox.addViewer(qtyOut, o.maker);
+        Nox.addViewer(qtyOut, auditor);
+
+        emit FillRecorded(fillId, id, msg.sender, declaredBucket);
+    }
+
+    // ------------------------------------------------------------------
+    // Withdrawal
+    // ------------------------------------------------------------------
+
+    /**
+     * Take free escrow back out.
+     *
+     * The counterpart deposit has always existed; this side did not, so value
+     * could enter escrow and never leave except by being traded away. Both are
+     * self-declared in the same way, which is the documented escrow gap - the
+     * point here is only that the ledger is now symmetric.
+     *
+     * The transfer's success flag is ignored for the usual reason: asking for
+     * more than you hold moves zero rather than reverting, because a revert
+     * would confirm the size of a balance the venue cannot otherwise read.
+     */
+    function withdrawCash(externalEuint256 encAmount, bytes calldata proof) external {
+        euint256 amount = Nox.fromExternal(encAmount, proof);
+        (, euint256 updated,) = Nox.transfer(escrowCash[msg.sender], euint256.wrap(0), amount);
+        escrowCash[msg.sender] = updated;
+        Nox.allowThis(updated);
+        Nox.addViewer(updated, msg.sender);
+        emit Withdrawn(msg.sender, false);
+    }
+
+    function withdrawShares(externalEuint256 encAmount, bytes calldata proof) external {
+        euint256 amount = Nox.fromExternal(encAmount, proof);
+        (, euint256 updated,) = Nox.transfer(escrowShares[msg.sender], euint256.wrap(0), amount);
+        escrowShares[msg.sender] = updated;
+        Nox.allowThis(updated);
+        Nox.addViewer(updated, msg.sender);
+        emit Withdrawn(msg.sender, true);
     }
 
     // ------------------------------------------------------------------
@@ -354,21 +591,40 @@ contract DeferralVenue {
     // Cancellation
     // ------------------------------------------------------------------
 
+    /**
+     * Reclaim what the order still holds.
+     *
+     * Which leg comes back depends on the side, because that is what was
+     * escrowed: an Ask locked up shares, a Bid locked up cash. Returning the
+     * wrong one would credit a balance that was never posted.
+     */
     function cancel(uint256 id) external {
         Order storage o = orders[id];
         require(msg.sender == o.maker, "not maker");
         require(o.state == OrderState.Open, "pending or cancelled");
         o.state = OrderState.Cancelled;
 
-        (, euint256 newRemaining, euint256 newMakerShares) =
-            Nox.transfer(o.qtyRemaining, escrowShares[msg.sender], o.qtyRemaining);
+        if (o.side == Side.Ask) {
+            (, euint256 newRemaining, euint256 newMakerShares) =
+                Nox.transfer(o.qtyRemaining, escrowShares[msg.sender], o.qtyRemaining);
 
-        o.qtyRemaining = newRemaining;
-        escrowShares[msg.sender] = newMakerShares;
+            o.qtyRemaining = newRemaining;
+            escrowShares[msg.sender] = newMakerShares;
 
-        Nox.allowThis(newRemaining);
-        Nox.allowThis(newMakerShares);
-        Nox.addViewer(newMakerShares, msg.sender);
+            Nox.allowThis(newRemaining);
+            Nox.allowThis(newMakerShares);
+            Nox.addViewer(newMakerShares, msg.sender);
+        } else {
+            (, euint256 newCash, euint256 newMakerCash) =
+                Nox.transfer(o.cashRemaining, escrowCash[msg.sender], o.cashRemaining);
+
+            o.cashRemaining = newCash;
+            escrowCash[msg.sender] = newMakerCash;
+
+            Nox.allowThis(newCash);
+            Nox.allowThis(newMakerCash);
+            Nox.addViewer(newMakerCash, msg.sender);
+        }
     }
 
     /// Clears PendingResolution once the maker has confirmed off-chain that

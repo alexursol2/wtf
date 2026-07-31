@@ -8,7 +8,7 @@
   "cashToken": "0xb956f6651ec9d7d53c89ae4fb3068988f660b4db",
   "sharesWrapper": "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
   "cashWrapper": "0x89ef295d85401890736e9b07e7498e4b77531e63",
-  "venue": "0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569",
+  "venue": "0x97239e7f58ff1795991949961deb32794422eaf8",
   "auditor": "0xACc8D0072bB98eA0764704D1CA585140Fa981cc7",
   "priceScale": 10000,
   "lisDeferralSeconds": 90,
@@ -25,16 +25,12 @@
       "deployedAt": "2026-07-31T19:25:12.657Z"
     }
   },
-  "orderInstruments": {
-    "6": "AAPL.rwa",
-    "7": "AAPL.rwa",
-    "8": "AAPL.rwa",
-    "9": "TSLA.rwa",
-    "10": "TSLA.rwa"
-  },
   "seededAt": "2026-07-31T20:32:09.748Z",
-  "fillInstruments": {
-    "5": "AAPL.rwa",
-    "6": "TSLA.rwa"
-  }
+  "previousVenues": [
+    {
+      "address": "0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569",
+      "retiredAt": "2026-07-31T21:28:22.111Z"
+    }
+  ],
+  "venueDeployedAt": "2026-07-31T21:28:22.112Z"
 }

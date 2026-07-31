@@ -37,14 +37,7 @@ import {
 } from "@iexec-nox/handle";
 import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
-import {
-  INSTRUMENTS,
-  SEEDED_FILL_INSTRUMENT,
-  SEEDED_ORDER_INSTRUMENT,
-  countryName,
-  pairLabel,
-  type Instrument,
-} from "./reference.js";
+import { INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
 import { clearHandleStorage, persistentHandleStorage } from "./handleStorage.js";
 import { initTooltips } from "./tooltip.js";
 import {
@@ -769,6 +762,9 @@ function renderComplianceNotice() {
 interface OrderRow {
   id: number;
   maker: string;
+  /** 0 = Ask (offering shares), 1 = Bid (offering cash). */
+  side: number;
+  instrument: number;
   qtyRemaining: string;
   price: string;
   expiry: bigint;
@@ -780,6 +776,7 @@ interface FillRow {
   id: number;
   maker: string;
   taker: string;
+  instrument: number;
   qty: string;
   price: string;
   bucket: number;
@@ -834,67 +831,21 @@ function persistHidden() {
  * fabricated percentage would be exactly the lie rule 1 forbids.
  */
 /**
- * Which instrument each order was posted for.
+ * Instrument comes off the chain now.
  *
- * `DeferralVenue.Order` has no instrument field, so the chain genuinely cannot
- * answer this — every order rests in one book regardless of what it is for.
- * Orders posted from THIS browser are tagged here, which is honest because we
- * know what the user selected when they posted.
+ * `Order` and `Fill` each carry a plaintext `uint8 instrument`, so the venue
+ * itself knows which book a resting order belongs to. That replaces an entire
+ * layer of guesswork: a localStorage map of what this browser had posted, a
+ * shipped map of what the seeding script had posted, and a fallback for
+ * everything else — three sources that disagreed the moment an order arrived
+ * from a browser that had never seen it.
  *
- * Untagged orders resolve to the FIRST instrument, and that is a statement of
- * fact rather than a fallback: every order on this venue predates the other two
- * instruments existing, so they are all genuinely ACME30. Treating untagged as
- * "matches whatever is selected" was the bug — it made one ACME30 print appear
- * as the last traded price for Apple and Tesla alike.
- *
- * The residual limit is orders posted from ANOTHER browser after this change:
- * nothing on-chain records their instrument, so they will read as ACME30. The
- * only complete fix is `uint8 instrument` on Order and Fill plus a redeploy.
+ * The index is into INSTRUMENTS, which is why the seeding script and the
+ * frontend must agree on that order.
  */
-const ORDER_INSTRUMENT_KEY = "orders:instrument";
-const orderInstrument = new Map<number, string>(
-  (() => {
-    try {
-      return Object.entries(
-        JSON.parse(localStorage.getItem(ORDER_INSTRUMENT_KEY) ?? "{}") as Record<string, string>,
-      ).map(([k, v]) => [Number(k), v] as [number, string]);
-    } catch {
-      return [];
-    }
-  })(),
-);
-function rememberOrderInstrument(id: number, symbol: string) {
-  orderInstrument.set(id, symbol);
-  localStorage.setItem(
-    ORDER_INSTRUMENT_KEY,
-    JSON.stringify(Object.fromEntries(orderInstrument)),
-  );
-}
+const instrumentIndex = () => INSTRUMENTS.indexOf(state.instrument);
 
-/**
- * True when an order should appear under the selected instrument.
- *
- * Three sources, most specific first: what this browser posted, what the seeding
- * script posted (shipped in reference.ts, so it is right everywhere), and
- * finally the first instrument — correct for the original orders, which predate
- * the other two instruments existing.
- */
-function matchesInstrument(id: number): boolean {
-  const tag = orderInstrument.get(id) ?? SEEDED_ORDER_INSTRUMENT[id] ?? INSTRUMENTS[0].symbol;
-  return tag === state.instrument.symbol;
-}
-
-/**
- * Same question for a FILL, which needs its own map: fill ids are a separate
- * sequence from order ids, so the two must never share a lookup.
- */
-function fillInstrument(id: number): string {
-  return SEEDED_FILL_INSTRUMENT[id] ?? INSTRUMENTS[0].symbol;
-}
-
-function fillMatchesInstrument(id: number): boolean {
-  return fillInstrument(id) === state.instrument.symbol;
-}
+const symbolForIndex = (i: number) => INSTRUMENTS[i]?.symbol ?? `instrument ${i}`;
 
 const POSTED_KEY = "orders:posted";
 const postedQty = new Map<number, bigint>(
@@ -1021,6 +972,8 @@ async function refreshOnce() {
       nextOrders.push({
         id: i,
         maker: o.maker,
+        side: Number(o.side),
+        instrument: Number(o.instrument),
         qtyRemaining: o.qtyRemaining,
         price: o.price,
         expiry: o.expiry,
@@ -1042,6 +995,7 @@ async function refreshOnce() {
         id: i,
         maker: f.maker,
         taker: f.taker,
+        instrument: Number(f.instrument),
         qty: f.qty,
         price: f.price,
         bucket: Number(f.bucket),
@@ -1324,7 +1278,7 @@ function orderStatusChip(o: OrderRow, expired: boolean): string {
 function renderBook() {
   const host = el("book");
   const live = orders.filter(
-    (o) => o.stateCode !== OrderState.Cancelled && matchesInstrument(o.id),
+    (o) => o.stateCode !== OrderState.Cancelled && o.instrument === instrumentIndex(),
   );
 
   // Count tag on the toggle button reflects the whole live book, not the filter.
@@ -1417,7 +1371,7 @@ function renderMyOrders() {
   // Scoped to the selected instrument, like the book beside it — a blotter that
   // mixed pairs would not match the column it sits next to.
   const mine = orders.filter(
-    (o) => o.maker.toLowerCase() === state.account.toLowerCase() && matchesInstrument(o.id),
+    (o) => o.maker.toLowerCase() === state.account.toLowerCase() && o.instrument === instrumentIndex(),
   );
   if (!mine.length) {
     host.innerHTML = `<p class="empty">No ${escapeHtml(state.instrument.symbol)} orders of yours.</p>`;
@@ -1525,7 +1479,7 @@ function renderTicker() {
   // Task: the tape carries only prints with an open parameter, minus anything
   // the viewer has permanently hidden.
   const visible = fills.filter(
-    (f) => f.pricePublic && !hiddenFills.has(f.id) && fillMatchesInstrument(f.id),
+    (f) => f.pricePublic && !hiddenFills.has(f.id) && f.instrument === instrumentIndex(),
   );
 
   if (!visible.length) {
@@ -1692,8 +1646,7 @@ function renderExecuted(isAuditor: boolean) {
     .reverse()
     .map((f) => {
       const lis = f.bucket === Bucket.LargeInScale;
-      const symbol =
-        fillInstrument(f.id);
+      const symbol = symbolForIndex(f.instrument);
 
       const price =
         f.pricePublic && f.priceValue !== null
@@ -2092,7 +2045,7 @@ function lastPrint(): { price: bigint; fillId: number } | null {
   for (let i = fills.length - 1; i >= 0; i--) {
     const f = fills[i];
     if (!f.pricePublic || f.priceValue === null) continue;
-    if (!fillMatchesInstrument(f.id)) continue;
+    if (f.instrument !== instrumentIndex()) continue;
     return { price: f.priceValue, fillId: f.id };
   }
   return null;
@@ -2428,16 +2381,26 @@ function renderEntry() {
  * Excludes its own: `fill` rejects a self-fill outright, because with maker ==
  * taker both sides of the cash transfer resolve to one storage slot.
  */
-function hittableOrders(): OrderRow[] {
+function openOrders(side: number): OrderRow[] {
   const now = BigInt(Math.floor(Date.now() / 1000));
   const acct = state.account.toLowerCase();
   return orders.filter(
     (o) =>
+      o.side === side &&
       o.stateCode === OrderState.Open &&
       o.expiry > now &&
-      matchesInstrument(o.id) &&
+      o.instrument === instrumentIndex() &&
       (!acct || o.maker.toLowerCase() !== acct),
   );
+}
+
+/** Asks a buyer can lift. */
+const hittableOrders = (): OrderRow[] => openOrders(0);
+
+/** Bids a seller can hit — the side that only exists since the redeploy. */
+function pickBid(): OrderRow | null {
+  const bids = openOrders(1);
+  return bids.length ? bids.reduce((a, b) => (a.id <= b.id ? a : b)) : null;
 }
 
 /**
@@ -2529,102 +2492,146 @@ async function onEntrySubmit(e: Event) {
   if (need > 0n && !(await ensureFunded(need))) return;
 
   if (entry.side === "buy") {
+    // "never" still settles under the LIS bucket; what makes it never public is
+    // that reportTrade is never called.
+    const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
     const chosen = pickTarget();
-    if (!chosen) {
-      toast(
-        "error",
-        "No resting liquidity",
-        `Nothing is currently offered in ${state.instrument.symbol} that you can lift.`,
+
+    // MARKET BUY, or a limit that can cross right now: lift a resting ask.
+    if (entry.type === "market" || chosen) {
+      if (!chosen) {
+        toast(
+          "error",
+          "Nothing offered",
+          `No resting offers in ${state.instrument.symbol} to buy from. Post a bid instead.`,
+        );
+        return;
+      }
+      const bid =
+        entry.type === "market"
+          ? MARKET_BID
+          : BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+      if (bid <= 0n) {
+        toast("error", "Target price must be positive");
+        return;
+      }
+      await asyncAction(
+        {
+          button: el("entrySubmit") as HTMLButtonElement,
+          label: `${entry.type === "market" ? "Market" : "Limit"} buy`,
+          async: true,
+          onSettled: refresh,
+        },
+        async () => {
+          const b = await encryptInput(bid, CONFIG.venue);
+          const q = await encryptInput(qty, CONFIG.venue);
+          const tx = await state.venue!.fill(BigInt(chosen.id), b.handle, q.handle, b.proof, q.proof, bucket);
+          return tx.wait();
+        },
       );
       return;
     }
-    const target = String(chosen.id);
-    // "never" still settles under the LIS bucket; what makes it never public is
-    // that reportTrade is never called.
-    const bucket =
-      visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
 
-    let bid: bigint;
-    if (entry.type === "market") {
-      bid = MARKET_BID;
-    } else {
-      bid = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-      if (bid <= 0n) {
-        toast("error", "Limit bid must be positive");
-        return;
-      }
+    // LIMIT BUY with nothing to lift: rest a real bid, which the venue now
+    // supports. Previously this had nowhere to go and simply failed.
+    const bidPrice = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+    if (bidPrice <= 0n) {
+      toast("error", "Target price must be positive");
+      return;
     }
-
     await asyncAction(
-      {
-        button: el("entrySubmit") as HTMLButtonElement,
-        label: `${entry.type === "market" ? "Market" : "Limit"} buy #${target}`,
-        async: true,
-        onSettled: refresh,
-      },
+      { button: el("entrySubmit") as HTMLButtonElement, label: "Post bid", async: true, onSettled: refresh },
       async () => {
-        const b = await encryptInput(bid, CONFIG.venue);
         const q = await encryptInput(qty, CONFIG.venue);
-        const tx = await state.venue!.fill(BigInt(target), b.handle, q.handle, b.proof, q.proof, bucket);
+        const p = await encryptInput(bidPrice, CONFIG.venue);
+        const tx = await state.venue!.postBid(
+          instrumentIndex(),
+          q.handle,
+          p.handle,
+          q.proof,
+          p.proof,
+          GTC_EXPIRY,
+        );
+        const receipt = await tx.wait();
+        try {
+          const id = (await count("orders")) - 1;
+          if (id >= 0) rememberPosted(id, qty);
+        } catch {
+          /* progress bar degrades to "size not disclosed" — never to a guess */
+        }
+        return receipt;
+      },
+    );
+    return;
+  }
+
+  // ---- sell ----
+  const bucket = visibilityChoice() === "immediate" ? Bucket.Standard : Bucket.LargeInScale;
+  const restingBid = pickBid();
+
+  // MARKET SELL: hit a resting bid. This is a real immediate execution now —
+  // the venue has a bid side, so there is something to sell INTO rather than
+  // only a queue to join.
+  if (entry.type === "market") {
+    if (!restingBid) {
+      toast(
+        "error",
+        "No bids to hit",
+        `Nobody is bidding for ${state.instrument.symbol} right now. Post a limit offer instead.`,
+      );
+      return;
+    }
+    await asyncAction(
+      { button: el("entrySubmit") as HTMLButtonElement, label: "Market sell", async: true, onSettled: refresh },
+      async () => {
+        // Ask at 1: any resting bid clears it, which is what "at market" means.
+        const a = await encryptInput(1n, CONFIG.venue);
+        const q = await encryptInput(qty, CONFIG.venue);
+        const tx = await state.venue!.hit(BigInt(restingBid.id), a.handle, q.handle, a.proof, q.proof, bucket);
         return tx.wait();
       },
     );
     return;
   }
 
-  // ---- sell: post an ask ----
-  //
-  // A market sell is a MARKETABLE LIMIT here, and the distinction is the venue's
-  // structure rather than a shortcut. The book is one-sided: `postAsk` creates
-  // offers and `fill` lifts them, with no `postBid`, so there are no resting
-  // bids for a seller to hit and nothing can execute the instant it is signed.
-  // What a market sell can honestly mean is "price me to be taken first" — the
-  // offer goes out at the last traded price rather than above it, so it is the
-  // cheapest thing in the book and the next buyer lifts it.
-  let price: bigint;
-  if (entry.type === "market") {
-    price = referencePrice();
-    if (price <= 0n) {
-      toast(
-        "error",
-        "No reference price",
-        "Nothing has printed in this instrument yet, so there is no level to price against. Use a limit.",
-      );
-      return;
-    }
-    toast(
-      "info",
-      "Priced at the last print",
-      `Offered at ${unscale(price)} — the book has no resting bids, so this rests until a buyer lifts it.`,
-    );
-  } else {
-    price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
-    if (price <= 0n) {
-      toast("error", "Target price must be positive");
-      return;
-    }
+  const price = BigInt((el("entryPrice") as HTMLInputElement)?.value || "0");
+  if (price <= 0n) {
+    toast("error", "Target price must be positive");
+    return;
   }
 
-  // Offers rest until cancelled. See GTC_EXPIRY for why a date is still needed.
-  const expiry = GTC_EXPIRY;
+  // A limit sell that crosses a resting bid executes against it; otherwise it
+  // rests as an ask. Same decision an exchange makes on arrival.
+  if (restingBid) {
+    await asyncAction(
+      { button: el("entrySubmit") as HTMLButtonElement, label: "Limit sell", async: true, onSettled: refresh },
+      async () => {
+        const a = await encryptInput(price, CONFIG.venue);
+        const q = await encryptInput(qty, CONFIG.venue);
+        const tx = await state.venue!.hit(BigInt(restingBid.id), a.handle, q.handle, a.proof, q.proof, bucket);
+        return tx.wait();
+      },
+    );
+    return;
+  }
 
   await asyncAction(
     { button: el("entrySubmit") as HTMLButtonElement, label: "Post sell offer", async: true, onSettled: refresh },
     async () => {
       const q = await encryptInput(qty, CONFIG.venue);
       const p = await encryptInput(price, CONFIG.venue);
-      const tx = await state.venue!.postAsk(q.handle, p.handle, q.proof, p.proof, expiry);
+      const tx = await state.venue!.postAsk(
+        instrumentIndex(),
+        q.handle,
+        p.handle,
+        q.proof,
+        p.proof,
+        GTC_EXPIRY,
+      );
       const receipt = await tx.wait();
-      // Remember the size so this order can show a real fill percentage later.
-      // The id is the pre-push array length, i.e. the count before this post.
       try {
         const id = (await count("orders")) - 1;
-        if (id >= 0) {
-          rememberPosted(id, qty);
-          // Tag it, so the book can be filtered by pair despite the contract
-          // carrying no instrument field.
-          rememberOrderInstrument(id, state.instrument.symbol);
-        }
+        if (id >= 0) rememberPosted(id, qty);
       } catch {
         /* progress bar degrades to "size not disclosed" — never to a guess */
       }

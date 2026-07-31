@@ -13,13 +13,19 @@ export const VENUE_ABI = [
   "function escrowCash(address) view returns (bytes32)",
   "function escrowShares(address) view returns (bytes32)",
 
-  // maker
-  "function postAsk(bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof, uint64 expiry) external returns (uint256)",
+  // withdrawal — the counterpart to deposit, added in the two-sided venue
+  "function withdrawCash(bytes32 encAmount, bytes proof) external",
+  "function withdrawShares(bytes32 encAmount, bytes proof) external",
+
+  // maker — both sides of the book rest here
+  "function postAsk(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof, uint64 expiry) external returns (uint256)",
+  "function postBid(uint8 instrument, bytes32 encQty, bytes32 encPrice, bytes qtyProof, bytes priceProof, uint64 expiry) external returns (uint256)",
   "function cancel(uint256 id) external",
   "function reopen(uint256 id) external",
 
-  // taker
+  // taker — fill lifts an ask, hit sells into a bid
   "function fill(uint256 id, bytes32 encBid, bytes32 encQty, bytes bidProof, bytes qtyProof, uint8 declaredBucket) external",
+  "function hit(uint256 id, bytes32 encAsk, bytes32 encQty, bytes askProof, bytes qtyProof, uint8 declaredBucket) external",
 
   // disclosure
   "function reportTrade(uint256 fillId) external",
@@ -33,8 +39,12 @@ export const VENUE_ABI = [
   "function fillsCount() view returns (uint256)",
 
   // state
-  "function orders(uint256) view returns (address maker, bytes32 qtyRemaining, bytes32 price, uint64 expiry, uint8 state)",
-  "function fills(uint256) view returns (address maker, address taker, bytes32 qty, bytes32 price, uint8 bucket, uint64 volumeDeferredUntil, bool reported, bool volumePublished)",
+  // `side` and `instrument` are PLAINTEXT: which security is quoted, and which
+  // way, is not the secret — the size and the price are. That is what makes
+  // separate books possible at all, since an encrypted tag could never be
+  // compared.
+  "function orders(uint256) view returns (address maker, uint8 side, uint8 instrument, bytes32 qtyRemaining, bytes32 cashRemaining, bytes32 price, uint64 expiry, uint8 state)",
+  "function fills(uint256) view returns (address maker, address taker, uint8 instrument, bytes32 qty, bytes32 price, uint8 bucket, uint64 volumeDeferredUntil, bool reported, bool volumePublished)",
   "function PRICE_SCALE() view returns (uint256)",
   "function LIS_DEFERRAL() view returns (uint64)",
   "function auditor() view returns (address)",

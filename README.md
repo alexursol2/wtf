@@ -172,28 +172,38 @@ What this does and does not affect: settlement *between* parties is still exact 
 
 **An order can never be known to be exhausted.** `qtyRemaining` is encrypted, so there is no on-chain "fully filled" state. The maker decrypts their own remainder and cancels to reclaim. This is a genuine consequence of confidentiality, not an unfinished feature.
 
-**The book is one-sided, so "market sell" does not exist.** `postAsk` creates resting liquidity and `fill` consumes it; there is no `postBid`. In trading terms the venue is RFQ, not a matched two-sided book. The frontend maps this honestly rather than papering over it:
+**The book is two-sided.** `postAsk` rests shares, `postBid` rests cash, `fill` lifts an ask and `hit` sells into a bid. Both taker paths are branchless and gate on the same crossing test, mirrored:
 
 | UI action | Contract call | Notes |
 |---|---|---|
-| Limit sell | `postAsk` | You become the maker and the reporting entity |
-| Limit buy | `fill` with your bid | `Nox.ge(bid, price)` gates it; a non-crossing bid settles to **zero**, never reverts |
-| Market buy | `fill` with a crossing bid | You are debited `qty × ask ÷ 1e4`, never your bid, so bidding high does not overpay |
-| Market sell | *refused in the UI* | There are no resting bids to lift |
+| Limit sell (crossing) | `hit` | Executes against a resting bid |
+| Limit sell (resting) | `postAsk` | You become the maker and the reporting entity |
+| Limit buy (crossing) | `fill` | `Nox.ge(bid, price)` gates it; a non-crossing bid settles to **zero**, never reverts |
+| Limit buy (resting) | `postBid` | Escrows `qty × price ÷ 1e4` in cash |
+| Market buy | `fill` with a crossing bid | Debited `qty × ask ÷ 1e4`, never your bid, so bidding high does not overpay |
+| Market sell | `hit` with a minimal ask | Any resting bid clears it |
+
+In `hit` the shares leg moves **first**, and its success flag gates the cash release. Paying first and checking delivery afterwards would let an empty seller drain a bid's escrow, and no revert could undo it — the shortfall is a ciphertext nothing on-chain can read.
+
+The **reporting entity is always the order's maker**, on both paths: who quoted the price decides the disclosure obligation, not who happened to lift it.
 
 **Partial-fill percentages are only shown where both numbers are real.** `qtyRemaining` shrinks as fills land, but the original size is never stored on-chain and `Fill` does not carry its order id, so `filled/original` cannot be reconstructed from contract state. The frontend records the quantity *you typed* when posting (your own plaintext, in `localStorage`) and draws a bar only when it also holds a viewer grant on the remainder. An order posted from another browser shows "size sealed" rather than a fabricated ratio.
 
-**Circuit breakers exist in the source but not in the live deployment.** `setPaused` / `setFillFrozen` are auditor-only and covered by tests, added after the Sepolia venue was deployed and Etherscan-verified. The frontend probes `paused()` and reports "not available on this deployment" when the call reverts, instead of rendering a control that cannot work. Both act on plaintext state deliberately: gating settlement on an encrypted flag would silently zero trades rather than stopping them. Pausing halts *new* orders and fills — it cannot reverse a settled trade, because settlement has already moved encrypted balances and there is no un-transfer. Freezing a fill therefore blocks its **disclosure**, not its economics.
+**Circuit breakers are live.** `setPaused` / `setFillFrozen` are auditor-only and covered by tests. Both act on plaintext state deliberately: gating settlement on an encrypted flag would silently zero trades rather than stopping them. Pausing halts *new* orders and fills — it cannot reverse a settled trade, because settlement has already moved encrypted balances and there is no un-transfer. Freezing a fill therefore blocks its **disclosure**, not its economics.
 
-**All three instruments are real; the order book is shared.** `ACME30`, `AAPL.rwa` and `TSLA.rwa` each have a deployed ERC-3643 token and a `ConfidentialWrapper` on Sepolia, sharing the one `IdentityRegistry` — so an address verified for one is verified for all three, and each can be held, hidden and wrapped independently.
+**Escrow now has a withdrawal.** `withdrawCash` / `withdrawShares` are the counterpart to the deposits; previously value could enter escrow and only leave by being traded away. Over-withdrawing moves zero rather than reverting, for the usual reason — a revert would confirm the size of a balance the venue cannot otherwise disclose. *The UI does not call these yet;* its Withdraw button drives the wrapper's unwrap.
 
-| Instrument | Token | Wrapper |
-|---|---|---|
-| ACME30 | `0xb0ba5244…f94E7` | `0x28bf0728…b4dd8` |
-| AAPL.rwa | `0xDd2B5764…9BAf53` | `0xd673ad27…4826cc` |
-| TSLA.rwa | `0x275E645a…62d982` | `0x758c57f1…844a9b` |
+> **Picking this up on another machine?** `CONTINUE.md` has the full setup, the env vars that are not in git, the redeploy/re-seed runbook, and the traps worth knowing before you touch anything.
 
-What they share is the **book**. `DeferralVenue.Order` carries no instrument field, so the venue cannot tell an ACME30 ask from an AAPL.rwa one and every order rests in the same book. Separating them needs `uint8 instrument` on `Order` and `Fill` plus a redeploy, which would retire the currently verified venue address and the fills already printed against it. The selector says so rather than implying three books.
+**All three instruments are real, and each has its own book.** `ACME30`, `AAPL.rwa` and `TSLA.rwa` each have a deployed ERC-3643 token and a `ConfidentialWrapper` on Sepolia, sharing the one `IdentityRegistry` — so an address verified for one is verified for all three.
+
+| # | Instrument | Token | Wrapper |
+|---|---|---|---|
+| 0 | ACME30 | `0xb0ba5244…f94E7` | `0x28bf0728…b4dd8` |
+| 1 | AAPL.rwa | `0xDd2B5764…9BAf53` | `0xd673ad27…4826cc` |
+| 2 | TSLA.rwa | `0x275E645a…62d982` | `0x758c57f1…844a9b` |
+
+`Order` and `Fill` carry a plaintext `uint8 instrument` — an index into that table. Plaintext on purpose: *which* security is quoted is not the secret, the size and the price are, and an encrypted tag could never be compared. **The index order is load-bearing**; appending is safe, reordering silently re-labels every existing order.
 
 Each instrument gets its own `ModularCompliance` because `bindToken` binds one-to-one; the identity layer is deliberately *not* duplicated, since a second `IdentityRegistry` would leave every already-verified address unverified against it and the venue points at exactly one.
 
