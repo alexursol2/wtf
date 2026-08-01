@@ -1729,11 +1729,17 @@ function renderExecuted(isAuditor: boolean) {
           ? `<strong class="mono">${money(f.priceValue)}</strong>`
           : `<span class="cipher">price sealed</span>`;
 
+      // A PUBLISHED volume is public — the tape is already printing it. Offering
+      // the regulator a "reveal" for it, or telling a visitor it needs the
+      // regulator's grant, said the public could see more than this panel.
       const size = decrypted.has(f.qty)
         ? `<strong class="mono">${fmt(decrypted.get(f.qty)!)}</strong>`
-        : isAuditor
-          ? `<button class="small" data-reveal="${f.id}">Reveal size</button>`
-          : `<span class="cipher">requires the regulator's grant</span>`;
+        : f.volumePublic && f.volumeValue !== null
+          ? `<strong class="mono">${fmt(f.volumeValue)}</strong>
+             <span class="pill muted" data-tip="Published under the disclosure schedule — this size is public, not a regulator-only read.">public</span>`
+          : isAuditor
+            ? `<button class="small" data-reveal="${f.id}">Reveal size</button>`
+            : `<span class="cipher">requires the regulator's grant</span>`;
 
       // Where this trade sits on its schedule, in plain words.
       let schedule: string;
@@ -1760,8 +1766,8 @@ function renderExecuted(isAuditor: boolean) {
             <span>size ${size}</span>
           </div>
           <div class="row-meta">
-            <span>seller ${escapeHtml(shortAddr(f.maker))}</span>
-            <span>buyer ${escapeHtml(shortAddr(f.taker))}</span>
+            <span data-tip="The order's maker, and therefore the reporting entity — the party reportTrade() obliges. Which SIDE they took is not recorded: Fill carries no side and no order id, so an ask that was lifted and a bid that was hit are indistinguishable here. Calling this one 'seller' was wrong for every trade that came from the bid side.">reporting entity ${escapeHtml(shortAddr(f.maker))}</span>
+            <span data-tip="Whoever took the resting order — the caller of fill() or hit().">counterparty ${escapeHtml(shortAddr(f.taker))}</span>
           </div>
         </div>
       </div>`;
@@ -1807,17 +1813,22 @@ function renderAuditorFills(isAuditor: boolean) {
             <div class="gap-cell regulator">
               <label>regulator sees</label>
               ${
-                isAuditor
-                  ? // Cached first: a value already decrypted stays on screen
-                    // across polls instead of flashing back to "decrypting…".
-                    // Undecrypted rows get an explicit button rather than an
-                    // automatic gateway round-trip — revealing is an act.
-                    decrypted.has(f.qty)
-                    ? `<div class="plain" id="audvol-${f.id}">${fmt(decrypted.get(f.qty)!)}</div>`
-                    : `<div id="audvol-${f.id}" class="cipher">sealed</div>
-                       <button class="small" data-reveal="${f.id}"
-                         data-tip="Decrypts this volume through the Nox gateway using the grant the contract gave the auditor at the moment of the fill.">Reveal encrypted volume</button>`
-                  : `<div class="cipher">requires the auditor's grant</div>`
+                // Cached first: a value already decrypted stays on screen across
+                // polls instead of flashing back to "decrypting…".
+                decrypted.has(f.qty)
+                  ? `<div class="plain" id="audvol-${f.id}">${fmt(decrypted.get(f.qty)!)}</div>`
+                  : // Once the volume is PUBLISHED there is no gap left to show:
+                    // the number is on the tape. Leaving this cell "sealed" beside
+                    // a public figure claimed a secrecy that had already ended.
+                    f.volumePublic && f.volumeValue !== null
+                    ? `<div class="plain" id="audvol-${f.id}">${fmt(f.volumeValue)}</div>`
+                    : isAuditor
+                      ? // Undecrypted rows get an explicit button rather than an
+                        // automatic gateway round-trip — revealing is an act.
+                        `<div id="audvol-${f.id}" class="cipher">sealed</div>
+                         <button class="small" data-reveal="${f.id}"
+                           data-tip="Decrypts this volume through the Nox gateway using the grant the contract gave the auditor at the moment of the fill.">Reveal encrypted volume</button>`
+                      : `<div class="cipher">requires the auditor's grant</div>`
               }
             </div>
             <div class="gap-cell">
@@ -2006,11 +2017,31 @@ async function onFreeze() {
   );
 }
 
+/**
+ * Who holds a wrapped balance, in EVERY instrument, and whether the auditor can
+ * read it.
+ *
+ * It used to inspect one wrapper — `VITE_SHARES_WRAPPER`, which is ACME30's —
+ * so a holder of AAPL.rwa or TSLA.rwa simply did not appear, and the panel
+ * called itself the holder register while showing a third of it. Supervision is
+ * of the venue, not of one issue, so it now walks each instrument's wrapper and
+ * labels every row with the instrument it belongs to.
+ */
 async function renderRegister() {
   const host = el("auditorRegister");
   if (!host) return;
-  if (!CONFIG.sharesWrapper || !state.auditor || !state.nox) {
-    host.innerHTML = `<p class="empty">Set VITE_SHARES_WRAPPER to inspect the register.</p>`;
+
+  // Each instrument has its own custody contract; CONFIG.sharesWrapper is only
+  // a fallback for a deployment that predates per-instrument wrappers.
+  const custody = INSTRUMENTS.filter((i) => i.wrapper);
+  const targets = custody.length
+    ? custody.map((i) => ({ symbol: i.symbol, address: i.wrapper }))
+    : CONFIG.sharesWrapper
+      ? [{ symbol: state.instrument.symbol, address: CONFIG.sharesWrapper }]
+      : [];
+
+  if (!targets.length || !state.auditor || !state.nox) {
+    host.innerHTML = `<p class="empty">No confidential wrapper configured — nothing to inspect.</p>`;
     return;
   }
 
@@ -2023,40 +2054,44 @@ async function renderRegister() {
   }
 
   const provider = state.signer ?? readOnlyProvider();
-  const wrapper = new Contract(CONFIG.sharesWrapper, WRAPPER_ABI, provider as any);
 
   const rows: string[] = [];
-  for (const holder of holders) {
-    let handle = ZeroHash;
-    try {
-      handle = await wrapper.balanceHandle(holder);
-    } catch {
-      continue;
-    }
-    if (handle === ZeroHash) continue;
+  for (const target of targets) {
+    const wrapper = new Contract(target.address, WRAPPER_ABI, provider as any);
 
-    let granted = false;
-    try {
-      granted = await state.nox.isViewer(handle, state.auditor);
-    } catch {
-      /* leave false */
-    }
+    for (const holder of holders) {
+      let handle = ZeroHash;
+      try {
+        handle = await wrapper.balanceHandle(holder);
+      } catch {
+        continue;
+      }
+      if (handle === ZeroHash) continue;
 
-    rows.push(`
-      <div class="row">
-        <div class="row-main">
-          <div class="row-title">
-            <strong class="mono">${escapeHtml(shortAddr(holder))}</strong>
-            ${granted ? statusChip("confirmed", "disclosed") : statusChip("submitted", "sealed")}
-            <span class="lock ${granted ? "open" : ""}"><svg><use href="#i-lock" /></svg><span>${
-              granted ? "readable by the auditor" : "issuer has not disclosed"
-            }</span></span>
+      let granted = false;
+      try {
+        granted = await state.nox.isViewer(handle, state.auditor);
+      } catch {
+        /* leave false */
+      }
+
+      rows.push(`
+        <div class="row">
+          <div class="row-main">
+            <div class="row-title">
+              <strong class="mono">${escapeHtml(shortAddr(holder))}</strong>
+              <span class="pill muted">${escapeHtml(target.symbol)}</span>
+              ${granted ? statusChip("confirmed", "disclosed") : statusChip("submitted", "sealed")}
+              <span class="lock ${granted ? "open" : ""}"><svg><use href="#i-lock" /></svg><span>${
+                granted ? "readable by the auditor" : "issuer has not disclosed"
+              }</span></span>
+            </div>
+            <div class="row-meta">
+              <span class="mono">${escapeHtml(short(handle))}</span> ${copyable(handle)}
+            </div>
           </div>
-          <div class="row-meta">
-            <span class="mono">${escapeHtml(short(handle))}</span> ${copyable(handle)}
-          </div>
-        </div>
-      </div>`);
+        </div>`);
+    }
   }
 
   host.innerHTML = rows.length
