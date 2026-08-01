@@ -45,7 +45,7 @@ Use a private endpoint (Alchemy free tier is fine).
 **`venue/frontend/.env.local`**:
 
 ```
-VITE_VENUE=0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23
+VITE_VENUE=0x3c8e8e37f81cd211c6a9509513bebc5e0ff41d76
 VITE_CHAIN_ID=11155111
 VITE_NOX_GATEWAY_URL=https://gateway-testnets.noxprotocol.dev
 VITE_NOX_SUBGRAPH_URL=https://thegraph.ethereum-sepolia-testnet.noxprotocol.io/api/subgraphs/id/9CsccKwvgYFo72zZeU4k4wj2NEBLdWhVE3EUandgmzgo
@@ -74,7 +74,7 @@ npx hardhat run scripts/fund-accounts.ts --network sepolia   # tops up from depl
 
 | What | Address |
 |---|---|
-| **DeferralVenue (current — no expiry, 1h deferral)** | `0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23` |
+| **DeferralVenue (current — no expiry, 1h deferral)** | `0x3c8e8e37f81cd211c6a9509513bebc5e0ff41d76` |
 | DeferralVenue (retired, two-sided with expiry) | `0x97239e7f58ff1795991949961deb32794422eaf8` |
 | DeferralVenue (retired, ask-only) | `0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569` |
 | IdentityRegistry (shared by all 3 tokens) | `0x9eF9D65E08Acc1fc91bF2815409Ac6782e20eF66` |
