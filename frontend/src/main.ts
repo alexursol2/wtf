@@ -487,6 +487,54 @@ function applyRoleForAccount() {
 // connect
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether this browser should reconnect on load.
+ *
+ * The wallet's own permission survives a reload, so the only thing that did not
+ * was our decision to use it — which meant refreshing the page dropped you back
+ * to the read-only view with a Connect button, as if the session had ended.
+ * This flag remembers the intent; `disconnect` clears it, so an explicit
+ * disconnect stays disconnected instead of being undone by the next reload.
+ */
+const SESSION_KEY = "wallet:connected";
+const rememberSession = (on: boolean) => {
+  try {
+    if (on) localStorage.setItem(SESSION_KEY, "1");
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* private mode — the session simply will not persist */
+  }
+};
+const wantsSession = () => {
+  try {
+    return localStorage.getItem(SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Reconnects without prompting, if the wallet still has us authorised.
+ *
+ * `eth_accounts` is the silent counterpart to `eth_requestAccounts`: it returns
+ * the already-permitted accounts and NEVER opens the wallet. That distinction is
+ * the whole reason this is safe to run on every page load — a reload can restore
+ * a session but can never create one, so nothing is connected behind the user's
+ * back.
+ */
+async function restoreSession() {
+  if (!wantsSession()) return;
+  const eth = (window as any).ethereum;
+  if (!eth) return;
+  try {
+    const accounts: string[] = await eth.request({ method: "eth_accounts" });
+    if (accounts?.length) await connect();
+    else rememberSession(false); // permission revoked in the wallet
+  } catch {
+    /* leave the read-only view up; Connect still works */
+  }
+}
+
 async function connect() {
   const eth = (window as any).ethereum;
   if (!eth) {
@@ -542,6 +590,7 @@ async function connect() {
   $("disconnect").classList.remove("hidden");
 
   clearBanner();
+  rememberSession(true);
   // The connected address decides the view. If it is the regulator, the whole
   // interface becomes the auditor's; otherwise it is the trading workspace.
   applyRoleForAccount();
@@ -594,6 +643,8 @@ async function disconnect() {
   // The gateway authorization and its RSA key belong to the address that just
   // left. Decrypted values go with them: they were readable because of a grant
   // this session held, and the next account has no claim on them.
+  // An explicit disconnect must survive a reload, or the next load undoes it.
+  rememberSession(false);
   clearHandleStorage();
   decrypted.clear();
   pendingUntil.clear();
@@ -3597,7 +3648,13 @@ if (!CONFIG.venue) {
   render();
 } else {
   render();
-  void connectReadOnly().catch(() => {
-    /* stays disconnected; Connect still works */
-  });
+  // Read-only first so the book and tape paint without a wallet, then restore
+  // the session if there is one. Ordering matters: restoring rebuilds the
+  // clients against the real signer, so doing it second means the page is never
+  // left holding the throwaway read-only wallet.
+  void connectReadOnly()
+    .catch(() => {
+      /* stays disconnected; Connect still works */
+    })
+    .finally(() => void restoreSession());
 }

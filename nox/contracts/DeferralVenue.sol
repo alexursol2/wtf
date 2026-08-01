@@ -422,7 +422,15 @@ contract DeferralVenue {
         Nox.addViewer(newRemaining, o.maker);
         Nox.addViewer(qtyOut, msg.sender);
         Nox.addViewer(qtyOut, o.maker);
-        Nox.addViewer(qtyOut, auditor); // regulator sees volume from block 1
+        // The regulator sees BOTH legs from block 1, not just the size.
+        // "Price at settlement, volume on the deferral, regulator ahead of
+        // both" is the venue's whole claim, and granting only the quantity
+        // made it half true: an unreported trade left the supervisor able to
+        // see how much moved but not at what price — which is the leg that
+        // shows mispricing. Publication to the PUBLIC is still a separate act
+        // by the maker; this only decides who may look now.
+        Nox.addViewer(qtyOut, auditor);
+        Nox.addViewer(snapPrice, auditor);
 
         emit FillRecorded(fillId, id, msg.sender, declaredBucket);
     }
@@ -531,7 +539,10 @@ contract DeferralVenue {
         Nox.addViewer(newRemaining, o.maker);
         Nox.addViewer(qtyOut, msg.sender);
         Nox.addViewer(qtyOut, o.maker);
+        // Both legs to the regulator, as in fill(). A trade that arrived from
+        // the bid side is no less supervised than one from the ask side.
         Nox.addViewer(qtyOut, auditor);
+        Nox.addViewer(snapPrice, auditor);
 
         emit FillRecorded(fillId, id, msg.sender, declaredBucket);
     }

@@ -429,12 +429,33 @@ describe("DeferralVenue", () => {
     const orderId = await postAsk();
     await fill(orderId, 1); // LargeInScale, so volume is deferred
 
-    const fqty = ((await venue.read.fills([0n])) as any[])[FILL.qty];
+    const f = (await venue.read.fills([0n])) as any[];
+    const fqty = f[FILL.qty];
 
     assert.equal(
       await noxRead("isViewer", [fqty, ctx.auditor.account.address]),
       true,
       "auditor cannot see the volume",
+    );
+
+    // BOTH legs, not just the size. "Regulator ahead of both" is the venue's
+    // claim, and granting only the quantity made it half true: the supervisor
+    // could see how much moved but not at what price, which is the leg that
+    // shows mispricing.
+    assert.equal(
+      await noxRead("isViewer", [f[FILL.price], ctx.auditor.account.address]),
+      true,
+      "auditor cannot see the price",
+    );
+    assert.equal(
+      await noxRead("isPubliclyDecryptable", [f[FILL.price]]),
+      false,
+      "the price leaked to the public before it was reported",
+    );
+    assert.equal(
+      await noxRead("isViewer", [f[FILL.price], outsider.address]),
+      false,
+      "an outsider can read the price",
     );
     assert.equal(
       await noxRead("isViewer", [fqty, outsider.address]),

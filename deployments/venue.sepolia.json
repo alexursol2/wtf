@@ -8,7 +8,7 @@
   "cashToken": "0xb956f6651ec9d7d53c89ae4fb3068988f660b4db",
   "sharesWrapper": "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
   "cashWrapper": "0x89ef295d85401890736e9b07e7498e4b77531e63",
-  "venue": "0x1d6bd0ac7e88fd79240f71d6fb5da7ca08404e9f",
+  "venue": "0x3c8e8e37f81cd211c6a9509513bebc5e0ff41d76",
   "auditor": "0xACc8D0072bB98eA0764704D1CA585140Fa981cc7",
   "priceScale": 10000,
   "lisDeferralSeconds": 3600,
@@ -38,7 +38,15 @@
     {
       "address": "0x489a3c4bbca81f1ad3bdc1c9aa05fa1c4982ba23",
       "retiredAt": "2026-07-31T23:20:23.154Z"
+    },
+    {
+      "address": "0x1d6bd0ac7e88fd79240f71d6fb5da7ca08404e9f",
+      "retiredAt": "2026-08-01T00:47:46.576Z"
+    },
+    {
+      "address": "0x40ef0ecd4fbcc4c421cefc7138f8a7ab667055cd",
+      "retiredAt": "2026-08-01T06:58:57.821Z"
     }
   ],
-  "venueDeployedAt": "2026-07-31T23:20:23.155Z"
+  "venueDeployedAt": "2026-08-01T06:58:57.821Z"
 }
