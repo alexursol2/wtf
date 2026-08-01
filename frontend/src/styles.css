@@ -609,6 +609,21 @@ select {
   border-color: color-mix(in srgb, var(--danger) 45%, var(--line-soft));
 }
 
+/* Side pills read at a glance and NEVER change with the state of the row: a buy
+   is green whether it is open, resting or cancelled. They use the side palette,
+   not --ok / --danger, because a sell is not a failure — the same reason those
+   two token sets are kept apart at the top of this file. */
+.pill.buy {
+  background: var(--buy);
+  color: var(--buy-ink);
+  border-color: color-mix(in srgb, var(--buy) 70%, var(--line));
+}
+.pill.sell {
+  background: var(--sell);
+  color: var(--sell-ink);
+  border-color: color-mix(in srgb, var(--sell) 70%, var(--line));
+}
+
 /* --------------------------------------------------------------- controls -- */
 
 button {

@@ -1400,7 +1400,7 @@ function renderBook() {
           <div class="row-title">
             <strong>#${o.id}</strong>
             ${orderStatusChip(o)}
-            <span class="pill ${o.side === 1 ? "solid" : "muted"}">${o.side === 1 ? "bid" : "ask"}</span>
+            <span class="pill ${o.side === 1 ? "buy" : "sell"}">${o.side === 1 ? "bid" : "ask"}</span>
             ${mine ? `<span class="pill solid">yours</span>` : ""}
             <span class="lock"><svg><use href="#i-lock" /></svg><span>size &amp; price encrypted</span></span>
           </div>
@@ -1458,8 +1458,8 @@ function renderMyOrders() {
           <div class="row-title">
             <strong>#${o.id}</strong>
             ${orderStatusChip(o)}
-            <span class="pill muted">${o.side === 1 ? "buy" : "sell"}</span>
-            <span class="pill solid" data-tip="Rests until you cancel it. The venue has no order lifetime — nothing expires on its own.">GTC</span>
+            <span class="pill ${o.side === 1 ? "buy" : "sell"}">${o.side === 1 ? "buy" : "sell"}</span>
+            <span class="pill muted" data-tip="Rests until you cancel it. The venue has no order lifetime — nothing expires on its own.">GTC</span>
           </div>
           ${progressMarkup(o)}
           <div class="row-meta">
@@ -2289,6 +2289,25 @@ function renderAllocSource() {
 }
 
 /** Slider/preset → quantity. Buying converts cash to a share count at a price. */
+/**
+ * Sizes snap DOWN to a round lot.
+ *
+ * A percentage of a balance divided by a price lands on a number like 1 987,
+ * and a book quoted in clean prices deserves clean sizes beside it. The lot
+ * grows with the size, so a 12-share order stays 12 while a four-figure one
+ * loses its tail rather than its meaning.
+ *
+ * DOWN, never up, and that is the whole reason this is safe: the slider sizes
+ * against a balance, so rounding up would commit more than the trader holds —
+ * and an over-committed order does not fail loudly here, it settles for zero.
+ */
+function roundLot(qty: bigint): bigint {
+  if (qty <= 0n) return 0n;
+  const lot =
+    qty >= 10_000n ? 100n : qty >= 1_000n ? 50n : qty >= 200n ? 10n : qty >= 20n ? 5n : 1n;
+  return (qty / lot) * lot;
+}
+
 function applyAllocation(pct: number) {
   const qtyEl = el("entryQty") as HTMLInputElement | null;
   const { amount } = spendable();
@@ -2307,7 +2326,7 @@ function applyAllocation(pct: number) {
   }
 
   if (entry.side === "sell") {
-    qtyEl.value = ((amount * BigInt(pct)) / 100n).toString();
+    qtyEl.value = roundLot((amount * BigInt(pct)) / 100n).toString();
     renderSafety();
     return;
   }
@@ -2321,7 +2340,7 @@ function applyAllocation(pct: number) {
     if (note) note.textContent = "Enter a limit price — cash cannot be converted to a size without one.";
     return;
   }
-  qtyEl.value = (((amount * BigInt(pct)) / 100n) * state.priceScale / ref).toString();
+  qtyEl.value = roundLot((((amount * BigInt(pct)) / 100n) * state.priceScale) / ref).toString();
   renderSafety();
 }
 
@@ -2430,19 +2449,22 @@ function syncFromQty() {
   const out = el("entryNotional") as HTMLInputElement | null;
   if (!out || price <= 0n) return;
   syncingAmounts = true;
-  out.value = qty > 0n ? ((qty * price) / state.priceScale).toString() : "";
+  // `qty × price` is already scaled, since the price is. Shown to the cent
+  // rather than truncated to whole dollars: 7 at 25.20 is 176.40, and printing
+  // 176 next to a price quoted in cents makes the pair look wrong.
+  out.value = qty > 0n ? unscale(qty * price) : "";
   syncingAmounts = false;
   renderSafety();
 }
 
 function syncFromNotional() {
   if (syncingAmounts) return;
-  const notional = BigInt((el("entryNotional") as HTMLInputElement)?.value || "0");
+  const notionalScaled = scalePrice((el("entryNotional") as HTMLInputElement)?.value ?? "");
   const price = workingPrice();
   const out = el("entryQty") as HTMLInputElement | null;
   if (!out || price <= 0n) return;
   syncingAmounts = true;
-  out.value = notional > 0n ? ((notional * state.priceScale) / price).toString() : "";
+  out.value = notionalScaled > 0n ? roundLot(notionalScaled / price).toString() : "";
   syncingAmounts = false;
   renderSafety();
 }

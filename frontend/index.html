@@ -238,7 +238,9 @@
 
             <div class="field">
               <label for="entryNotional">Total <span id="notionalUnit" class="mono">&#36;</span></label>
-              <input id="entryNotional" type="number" min="0" step="1" placeholder="50" />
+              <!-- Money, so it takes cents. Step 0.01 to match what the field
+                   derives from a quantity: 7 at 25.20 is 176.40, not 176. -->
+              <input id="entryNotional" type="number" min="0" step="0.01" placeholder="50.00" />
             </div>
 
             <div class="alloc">
