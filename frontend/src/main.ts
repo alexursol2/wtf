@@ -2192,16 +2192,19 @@ function lastPrint(): { price: bigint; fillId: number } | null {
 }
 
 /**
- * The price to reckon with: a real print if one exists for this instrument,
- * otherwise the instrument's indicative level.
+ * The price to reckon with — the last print, and nothing else.
  *
- * The distinction is kept visible everywhere it is shown — a print is something
- * that happened, an indicative is reference data — but for arithmetic (sizing a
- * percentage allocation, seeding the limit field) either is a usable number and
- * having none at all is what makes the control useless.
+ * There used to be a fallback: a per-instrument `indicative` level shipped in
+ * reference.ts, used whenever nothing had traded. It made every panel look
+ * populated, and that was the problem — the number came from the frontend, not
+ * from the venue, and it stayed put while the market moved.
+ *
+ * ZERO means "no public price", and callers must treat it as the absence of a
+ * number rather than as a cheap zero: a market order is refused, an allocation
+ * asks for a limit, and the mark shows a dash.
  */
 function referencePrice(): bigint {
-  return lastPrint()?.price ?? state.instrument.indicative;
+  return lastPrint()?.price ?? 0n;
 }
 
 const priceScale = () => (state.priceScale === 0n ? 10_000n : state.priceScale);
@@ -2256,29 +2259,28 @@ function renderMark() {
   const sym = state.instrument.symbol;
   const labelEl = el("markLabel");
 
-  // A print and an indicative are both usable numbers but they are not the same
-  // claim, so the label changes with the source rather than blurring them.
-  const price = last ? last.price : state.instrument.indicative;
-  const kind = last ? "Last print" : "Indicative";
-
-  if (labelEl) labelEl.textContent = kind;
-  priceEl.textContent = money(price);
+  // No print, no price. The screen says so rather than falling back to a level
+  // this file made up — an empty book is a fact about the venue, and dressing
+  // it as a quote is the one thing the mark must never do.
+  if (labelEl) labelEl.textContent = last ? "Last print" : "No price";
+  priceEl.textContent = last ? money(last.price) : "—";
   // The PRICE is public once reported, so quoting it is fine. Naming the fill it
   // came from is not: it would tie a published number back to one pair of
   // counterparties, which is more than the tape discloses.
   if (metaEl)
     metaEl.textContent = last
       ? `${sym} · last traded`
-      : `${sym} · reference level, nothing has printed yet`;
+      : `${sym} · nothing has printed — resting prices are ciphertext`;
   if (hintEl) hintEl.textContent = `per share, in ${quoteSymbol()}`;
 
   // Same reference wherever the instrument is named, so no panel quotes a
   // different number than its neighbour.
+  const mark = last ? `last print ${money(last.price)}` : "no prints yet";
   const ordersRef = el("myOrdersRef");
-  if (ordersRef) ordersRef.textContent = `${sym} · ${kind.toLowerCase()} ${money(price)}`;
+  if (ordersRef) ordersRef.textContent = `${sym} · ${mark}`;
 
   const bondMark = el("bondMark");
-  if (bondMark) bondMark.textContent = `${kind.toLowerCase()} ${money(price)}`;
+  if (bondMark) bondMark.textContent = mark;
 
   // Seed the limit field with a real, editable number rather than a hint.
   //
@@ -2291,8 +2293,10 @@ function renderMark() {
   // input handler, and nothing here overwrites their number.
   const priceInput = el("entryPrice") as HTMLInputElement | null;
   if (priceInput) {
-    priceInput.placeholder = unscale(price);
-    if (!priceEdited) priceInput.value = unscale(price);
+    // With nothing printed there is no number to seed it with, so the field
+    // stays empty and asks for one instead of pre-filling a guess.
+    priceInput.placeholder = last ? unscale(last.price) : "your price";
+    if (!priceEdited && last) priceInput.value = unscale(last.price);
   }
 }
 
@@ -2366,13 +2370,16 @@ function applyAllocation(pct: number) {
     return;
   }
 
-  // Buying: cash buys qty = cash × SCALE ÷ price. Prefer the typed limit, then
-  // the last public print, then the instrument's indicative price.
+  // Buying: cash buys qty = cash × SCALE ÷ price. The typed limit first, then
+  // the last print. With neither there is no rate to convert at, and the panel
+  // says so rather than inventing one.
   const typed = typedPrice();
   const ref = typed > 0n ? typed : referencePrice();
   if (ref <= 0n) {
     const note = el("allocNote");
-    if (note) note.textContent = "Enter a limit price — cash cannot be converted to a size without one.";
+    if (note)
+      note.textContent =
+        "Nothing has printed in this instrument yet — type a price and the percentage will convert against it.";
     return;
   }
   qtyEl.value = roundLot((((amount * BigInt(pct)) / 100n) * state.priceScale) / ref).toString();
@@ -2561,12 +2568,19 @@ function renderEntry() {
   // will carry, not a rule of thumb.
   const collarNote = el("collarNote");
   if (collarNote) {
-    if (market) {
-      const limit = buy ? collarBuy(referencePrice()) : collarSell(referencePrice());
+    const ref = referencePrice();
+    if (market && ref > 0n) {
+      const limit = buy ? collarBuy(ref) : collarSell(ref);
       collarNote.textContent =
-        `Executes within ${Number(COLLAR_BPS) / 100}% of the reference — ` +
+        `Executes within ${Number(COLLAR_BPS) / 100}% of the last print — ` +
         `${buy ? "paying no more than" : "receiving no less than"} ${money(limit)}. ` +
         `Outside that band the trade settles for zero rather than at a bad price.`;
+    } else if (market) {
+      // The collar is measured from the last print, so with no print there is
+      // nothing to measure. Rather than let "at market" mean "at any price the
+      // other side names", the order is refused on submit and this says why.
+      collarNote.textContent =
+        "Nothing has printed in this instrument, so there is no reference to price a market order against. Use a limit.";
     } else {
       collarNote.textContent = "";
     }
@@ -2849,7 +2863,9 @@ async function onEntrySubmit(e: Event) {
     toast(
       "error",
       market ? "No reference price" : "Target price must be positive",
-      market ? "Nothing has printed in this instrument and it has no indicative level." : undefined,
+      market
+        ? "Nothing has printed in this instrument, so there is no price to collar a market order against. Post a limit and it becomes the first print."
+        : undefined,
     );
     return;
   }

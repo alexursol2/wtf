@@ -88,17 +88,23 @@ export interface Instrument {
   token: string;
   /** ERC-7984-style wrapper that takes custody and issues an encrypted balance. */
   wrapper: string;
-  /**
-   * Indicative price, scaled by PRICE_SCALE (1e4).
-   *
-   * Issue-level reference data, NOT a market price and never presented as one.
-   * It seeds the limit field and lets a percentage allocation convert cash into
-   * a size before anything has printed. The moment a real print exists for the
-   * instrument, that print takes precedence everywhere — see `referencePrice`.
-   * A bond quotes near par; the two equities quote near their cash price.
-   */
-  indicative: bigint;
 }
+
+/*
+ * There is no `indicative` field any more, and its absence is the point.
+ *
+ * It used to carry a shipped price per instrument so the screen had a number
+ * before anything traded. But a hardcoded level is not a price: it comes from
+ * this file rather than from the venue, it never moves when the market does,
+ * and every panel that quoted it was quoting the frontend to itself. The only
+ * price this venue can honestly state is the price leg of a settled fill, once
+ * its maker has reported it — see `lastPrint` and `referencePrice`.
+ *
+ * The cost is real and accepted: an instrument that has never printed has NO
+ * reference, so a market order in it is refused and a percentage allocation
+ * cannot convert cash into a size until a limit price is typed. That is the
+ * truth about a dark book with no trades in it.
+ */
 
 export const INSTRUMENTS: Instrument[] = [
   {
@@ -107,7 +113,6 @@ export const INSTRUMENTS: Instrument[] = [
     name: "ACME 2030 senior note",
     token: "0xb0ba5244DF094160Ff31E523Fa5F8a51124f94E7",
     wrapper: "0x28bf0728213275b52c3285a1423bd7e51acb4dd8",
-    indicative: 250_000n, // $25.00
   },
   {
     symbol: "AAPL.rwa",
@@ -115,7 +120,6 @@ export const INSTRUMENTS: Instrument[] = [
     name: "Apple Inc. tokenised equity",
     token: "0xDd2B5764dE8C58e2ab1482606bDDE5EdFb9BAf53",
     wrapper: "0xd673ad276a0ea96d346fd6727cee8cd8074826cc",
-    indicative: 500_000n, // $50.00
   },
   {
     symbol: "TSLA.rwa",
@@ -123,7 +127,6 @@ export const INSTRUMENTS: Instrument[] = [
     name: "Tesla Inc. tokenised equity",
     token: "0x275E645aF19e67BA5575E76814F4ecC14362d982",
     wrapper: "0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b",
-    indicative: 1_000_000n, // $100.00
   },
 ];
 
