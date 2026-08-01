@@ -554,7 +554,21 @@ async function connect() {
  * including the handle client: leaving it behind is exactly the bug above, in
  * reverse.
  */
+let disconnecting = false;
+
 async function disconnect() {
+  // TWO paths reach here for ONE user action, and that is not a mistake in
+  // either of them. The button calls it; the revoke below makes MetaMask emit
+  // `accountsChanged` with an empty list, and an empty list means disconnected,
+  // so that listener calls it too. Ungurded, the teardown ran twice and the
+  // user was told they had disconnected twice for disconnecting once.
+  //
+  // The flag catches the re-entrant call that arrives while the revoke is still
+  // in flight; the account check catches one that arrives after the state is
+  // already cleared.
+  if (disconnecting || !state.account) return;
+  disconnecting = true;
+
   try {
     await (window as any).ethereum?.request?.({
       method: "wallet_revokePermissions",
@@ -571,6 +585,11 @@ async function disconnect() {
   state.handleClient = null;
   state.handleClientFor = "";
   state.compliance = { verified: null, country: 0, countryGateActive: false, countryAllowed: true };
+
+  // Released here rather than at the end: from this point the empty account is
+  // itself the guard, and leaving the flag set across the awaits below would
+  // strand it as true if one of them threw.
+  disconnecting = false;
 
   // The gateway authorization and its RSA key belong to the address that just
   // left. Decrypted values go with them: they were readable because of a grant
@@ -600,6 +619,12 @@ async function disconnect() {
   $("connect").classList.remove("hidden");
   $("connect").textContent = "Connect wallet";
   $("disconnect").classList.add("hidden");
+
+  // Cleared HERE, not left to connectReadOnly() at the end. That call has to
+  // reach an RPC before it can relabel, and for those seconds the header still
+  // named the account that had just been disconnected, next to a Connect button.
+  $("netLabel").textContent = "not connected";
+  $("netLabel").className = "pill muted";
   syncWalletButton();
   $("complianceChip").className = "pill muted";
   $("complianceChip").textContent = "compliance unknown";
