@@ -74,9 +74,7 @@ npx hardhat run scripts/fund-accounts.ts --network sepolia   # tops up from depl
 
 | What | Address |
 |---|---|
-| **DeferralVenue (current — no expiry, 1h deferral)** | `0x3c8e8e37f81cd211c6a9509513bebc5e0ff41d76` |
-| DeferralVenue (retired, two-sided with expiry) | `0x97239e7f58ff1795991949961deb32794422eaf8` |
-| DeferralVenue (retired, ask-only) | `0xa55b6ed5d1f8a93343b60fe2cb3a0746e5069569` |
+| **DeferralVenue (current)** | `0x3c8e8e37f81cd211c6a9509513bebc5e0ff41d76` |
 | IdentityRegistry (shared by all 3 tokens) | `0x9eF9D65E08Acc1fc91bF2815409Ac6782e20eF66` |
 | Auditor / regulator | `0xACc8D0072bB98eA0764704D1CA585140Fa981cc7` |
 | Cash token | `0xb956f6651ec9d7d53c89ae4fb3068988f660b4db` |
@@ -92,7 +90,9 @@ safe; reordering silently re-labels every existing order.
 | 2 | TSLA.rwa | `0x275E645aF19e67BA5575E76814F4ecC14362d982` | `0x758c57f15cd6090426ed25ebe15a1cc4f2844a9b` |
 
 `deployments/venue.sepolia.json` and `deployments/trex.sepolia.json` are the
-source of truth and are committed.
+source of truth and are committed. Every retired venue is listed there under
+`previousVenues` with the date it was replaced — the list is not repeated here,
+because a hand-maintained copy of it went stale within two redeploys.
 
 ---
 
