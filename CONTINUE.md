@@ -51,8 +51,7 @@ VITE_NOX_GATEWAY_URL=https://gateway-testnets.noxprotocol.dev
 VITE_NOX_SUBGRAPH_URL=https://thegraph.ethereum-sepolia-testnet.noxprotocol.io/api/subgraphs/id/9CsccKwvgYFo72zZeU4k4wj2NEBLdWhVE3EUandgmzgo
 VITE_SHARES_WRAPPER=0x28bf0728213275b52c3285a1423bd7e51acb4dd8
 VITE_CASH_WRAPPER=0x89ef295d85401890736e9b07e7498e4b77531e63
-VITE_BOND_TOKEN=0xb0ba5244DF094160Ff31E523Fa5F8a51124f94E7
-VITE_CASH_TOKEN=0xb956f6651ec9d7d53c89ae4fb3068988f660b4db
+VITE_RPC_URL=<same as RPC_URL — optional, but a public endpoint rate-limits hard>
 ```
 
 Then:

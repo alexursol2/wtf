@@ -132,6 +132,18 @@ export const INSTRUMENTS: Instrument[] = [
 
 export const pairLabel = (i: Instrument) => `${i.symbol} / ${i.quote}`;
 
+/**
+ * The cash leg every pair settles against.
+ *
+ * Here rather than in an env var, alongside the instrument tokens it sits
+ * beside. A contract address is not a secret and not a per-environment choice:
+ * it is pinned to the same deployment as the wrappers above, so splitting it
+ * out only created a variable that could be forgotten — and when it was, the
+ * wallet's cash balance silently failed to read and the allocation slider fell
+ * back to escrow with no explanation.
+ */
+export const CASH_TOKEN = "0xb956f6651ec9d7d53c89ae4fb3068988f660b4db";
+
 /*
  * The SEEDED_ORDER_INSTRUMENT / SEEDED_FILL_INSTRUMENT maps that used to live
  * here are gone. They existed only because the venue could not record which

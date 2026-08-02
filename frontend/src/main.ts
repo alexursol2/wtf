@@ -37,7 +37,7 @@ import {
 } from "@iexec-nox/handle";
 import { VENUE_ABI, NOX_ABI, WRAPPER_ABI, ERC20_ABI, IDENTITY_REGISTRY_ABI } from "./abi.js";
 import { CONFIG, NOX_COMPUTE, CHAIN_NAMES, ORDER_STATE_LABEL, OrderState, Bucket } from "./config.js";
-import { INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
+import { CASH_TOKEN, INSTRUMENTS, countryName, pairLabel, type Instrument } from "./reference.js";
 import { clearHandleStorage, persistentHandleStorage } from "./handleStorage.js";
 import { initTooltips } from "./tooltip.js";
 import {
@@ -1222,7 +1222,7 @@ async function refreshWalletBalances() {
     // the slider sizes against. Cash is one token across all pairs — everything
     // here quotes against the same cash leg.
     ["shares", state.instrument.token],
-    ["cash", CONFIG.cashToken],
+    ["cash", CASH_TOKEN],
   ] as const) {
     if (!address) continue;
     try {
